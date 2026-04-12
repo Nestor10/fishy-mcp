@@ -1,0 +1,50 @@
+*.class
+*.log
+
+# sbt specific
+.cache
+.history
+.lib/
+dist/*
+target/
+lib_managed/
+src_managed/
+project/boot/
+project/plugins/project/
+
+# Scala-IDE specific
+.scala_dependencies
+.worksheet
+
+# Metals / BSP
+.metals/
+.bloop/
+.bsp/
+metals.sbt
+
+# VS Code
+.vscode/
+
+# IntelliJ
+.idea/
+*.iml
+
+# Environment
+.env
+*.iws
+*.ipr
+out/
+
+# Mac
+.DS_Store
+
+# virtual machine crash logs
+hs_err_pid*
+replay_pid*
+
+# Local prompt/copilot artifacts
+.github/prompts/
+.github/copilot-instructions.md
+.mcp.json
+.vscode/mcp.json
+context/
