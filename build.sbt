@@ -15,6 +15,7 @@ val openTelemetryVersion = "1.42.1"
 inThisBuild(
   List(
     organization := "io.github.nestor10",
+    versionScheme := Some("early-semver"),
     homepage := Some(url("https://github.com/Nestor10/fishy-mcp")),
     licenses := List("MIT" -> url("https://opensource.org/licenses/MIT")),
     developers := List(

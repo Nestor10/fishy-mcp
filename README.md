@@ -1,5 +1,7 @@
 # fishy-mcp
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.nestor10/fishy-mcp_3.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.nestor10/fishy-mcp_3)
+
 A Scala 3 SDK for building [Model Context Protocol](https://modelcontextprotocol.io/) servers on ZIO.
 
 ## Release Status
@@ -29,7 +31,7 @@ libraryDependencies += "io.github.nestor10" %% "fishy-mcp" % "<version>"
 <dependency>
   <groupId>io.github.nestor10</groupId>
   <artifactId>fishy-mcp_3</artifactId>
-  <version>${fishy-mcp.version}</version>
+  <version><version></version>
 </dependency>
 ```
 
