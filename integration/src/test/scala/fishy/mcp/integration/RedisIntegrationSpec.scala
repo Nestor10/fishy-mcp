@@ -1,6 +1,6 @@
 package fishy.mcp.integration
 
-import fishy.mcp.adapters.inbound.http.{HttpSecurityPolicy, HttpTransport}
+import fishy.mcp.adapters.inbound.http.{HttpExtraRoutes, HttpSecurityPolicy, HttpTransport}
 import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.adapters.storage.{InMemorySubscriptionRegistry, RedisBackend}
 import fishy.mcp.application.ports.*
@@ -105,6 +105,7 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
       PromptExecutor.layer,
       McpDispatcher.layer(serverInfo, capabilities),
       HttpSecurityPolicy.allowAll,
+      HttpExtraRoutes.empty,
       HttpTransport.layer
     )
 
@@ -346,6 +347,7 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
             PromptExecutor.layer,
             McpDispatcher.layer(serverInfo, capabilities),
             HttpSecurityPolicy.allowAll,
+            HttpExtraRoutes.empty,
             HttpTransport.layer
           )
 

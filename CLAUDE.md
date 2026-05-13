@@ -124,6 +124,11 @@ application's domain language.
 
 - Run `sbt core/test` after every meaningful change. The suite is fast and
   catches regressions early.
+- When changing a layer signature, public API, or anything else that
+  downstream modules consume (notably `HttpTransport.layer`, `MCPServer`
+  builders, anything in `application/ports/`), also run
+  `sbt integration/Test/compile example/compile`. CI builds them and they
+  will fail there if skipped. `sbt core/test` alone is not enough.
 - Cross off completed items in `context/REVIEW.md` and rewrite earlier
   sections of the review as if the codebase was always in its current state
   (the review is a *current-state* document, not a *change-log*).
