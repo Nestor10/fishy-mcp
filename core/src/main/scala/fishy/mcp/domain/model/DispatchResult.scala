@@ -1,42 +1,37 @@
 package fishy.mcp.domain.model
 
-import fishy.mcp.adapters.protocol.jsonrpc.{ErrorResponse, Response}
 import zio.*
 import zio.stream.ZStream
 
 /** Result of dispatching a JSON-RPC request.
   *
-  * Transport layer uses the variant to pick HTTP response format (JSON / SSE / 202).
+  * Domain-pure: the transport layer reads the variant and renders to its
+  * native response shape (HTTP body / SSE / stdio line) via an encoder in
+  * `adapters/protocol/jsonrpc/`.
   */
 enum DispatchResult:
 
-  /** Notification -- no response body (HTTP 202). */
+  /** Notification -- no response body (HTTP 202 / no stdio output). */
   case Empty
 
-  case Single(value: Either[ErrorResponse, Response])
+  /** A single typed response payload. */
+  case Single(payload: ResponsePayload)
 
-  /** SSE event stream: JSON-RPC notifications followed by the final response. */
-  case Streaming(events: ZStream[Any, Nothing, String])
+  /** A stream of zero or more notifications terminated by exactly one `Final`. */
+  case Streaming(events: ZStream[Any, Nothing, StreamFrame])
 
 object DispatchResult:
 
-  /** Collapse to Option for stdio/batch where SSE is not applicable. For Streaming, drains and
-    * returns the last message.
+  /** Collapse to the final payload, dropping intermediate notifications.
+    * Used by stdio/batch transports where streaming isn't applicable.
     */
   extension (dr: DispatchResult)
-    def toOption: UIO[Option[Either[ErrorResponse, Response]]] =
+    def toOption: UIO[Option[ResponsePayload]] =
       dr match
-        case DispatchResult.Empty     => ZIO.none
-        case DispatchResult.Single(v) => ZIO.some(v)
+        case DispatchResult.Empty       => ZIO.none
+        case DispatchResult.Single(p)   => ZIO.some(p)
         case DispatchResult.Streaming(events) =>
           events.runLast.map {
-            case Some(json) =>
-              import zio.json.*
-              json.fromJson[Response] match
-                case Right(r) => Some(Right(r))
-                case Left(_) =>
-                  json.fromJson[ErrorResponse] match
-                    case Right(e) => Some(Left(e))
-                    case Left(_)  => None
-            case None => None
+            case Some(StreamFrame.Final(p)) => Some(p)
+            case _                          => None
           }

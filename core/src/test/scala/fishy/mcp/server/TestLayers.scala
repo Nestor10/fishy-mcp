@@ -5,7 +5,7 @@ import fishy.mcp.application.usecase.*
 import fishy.mcp.adapters.storage.InMemorySubscriptionRegistry
 import fishy.mcp.bootstrap.TracingLayers
 import fishy.mcp.domain.model.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.stream.ZStream
 

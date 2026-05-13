@@ -1,4 +1,4 @@
-package fishy.mcp.adapters.protocol.mcp
+package fishy.mcp.domain.model.mcp
 
 import zio.json.*
 import zio.json.ast.Json

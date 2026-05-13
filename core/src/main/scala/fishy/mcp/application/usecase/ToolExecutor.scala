@@ -2,8 +2,7 @@ package fishy.mcp.application.usecase
 
 import fishy.mcp.application.ports.{MessageRouter, ToolRegistry}
 import fishy.mcp.domain.model.*
-import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -14,7 +13,7 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 trait ToolExecutor:
 
   /** List available tools. */
-  def list(id: RequestId): UIO[Either[ErrorResponse, Response]]
+  def list(id: RequestId): UIO[ResponsePayload]
 
   /** Execute a tool call, parsing params from JSON-RPC. Returns Single or Streaming. */
   def call(id: RequestId, params: Option[Json], sessionId: Option[String]): UIO[DispatchResult]
@@ -41,24 +40,34 @@ object ToolExecutor:
   // Layer constructors
   // ---------------------------------------------------------------------------
 
+  /** Default ceiling on concurrent in-flight tool calls. Anything beyond this
+    * is rejected with a JSON-RPC custom error so a buggy or hostile client
+    * can't accumulate fiber state without bound. Tune via [[layerWith]].
+    */
+  val DefaultMaxInFlight: Int = 64
+
   val layer: URLayer[
     ToolRegistry & ClientRequester & NotificationSender & MessageRouter & Tracing,
     ToolExecutor
   ] =
-    layerWith(publishToolEvents = false)
+    layerWith(publishToolEvents = false, maxInFlight = DefaultMaxInFlight)
 
-  def layerWith(publishToolEvents: Boolean): URLayer[
+  def layerWith(
+      publishToolEvents: Boolean,
+      maxInFlight: Int = DefaultMaxInFlight
+  ): URLayer[
     ToolRegistry & ClientRequester & NotificationSender & MessageRouter & Tracing,
     ToolExecutor
   ] =
     ZLayer {
       for
-        toolRegistry <- ZIO.service[ToolRegistry]
-        clientRequester <- ZIO.service[ClientRequester]
+        toolRegistry       <- ZIO.service[ToolRegistry]
+        clientRequester    <- ZIO.service[ClientRequester]
         notificationSender <- ZIO.service[NotificationSender]
-        messageRouter <- ZIO.service[MessageRouter]
-        tracing <- ZIO.service[Tracing]
-        inFlight <- Ref.make(Map.empty[RequestId, Fiber.Runtime[Nothing, Any]])
+        messageRouter      <- ZIO.service[MessageRouter]
+        tracing            <- ZIO.service[Tracing]
+        inFlight           <- Ref.make(Map.empty[RequestId, Fiber.Runtime[Nothing, Any]])
+        inFlightCount      <- Ref.make(0)
       yield Live(
         toolRegistry,
         clientRequester,
@@ -66,7 +75,9 @@ object ToolExecutor:
         messageRouter,
         tracing,
         inFlight,
-        publishToolEvents
+        inFlightCount,
+        publishToolEvents,
+        maxInFlight
       )
     }
 
@@ -81,12 +92,14 @@ object ToolExecutor:
       messageRouter: MessageRouter,
       tracing: Tracing,
       inFlight: Ref[Map[RequestId, Fiber.Runtime[Nothing, Any]]],
-      publishToolEvents: Boolean
+      inFlightCount: Ref[Int],
+      publishToolEvents: Boolean,
+      maxInFlight: Int
   ) extends ToolExecutor:
 
     import tracing.aspects.*
 
-    def list(id: RequestId): UIO[Either[ErrorResponse, Response]] =
+    def list(id: RequestId): UIO[ResponsePayload] =
       for
         tools <- toolRegistry.list
         definitions = tools.map(t =>
@@ -96,20 +109,20 @@ object ToolExecutor:
             inputSchema = t.inputJsonSchema
           )
         )
-        result = ToolsListResult(definitions)
-      yield Right(Response.success(id, result.toJsonAST.toOption.get))
+      yield encodeResult(id, ToolsListResult(definitions))
 
     def call(id: RequestId, params: Option[Json], sessionId: Option[String]): UIO[DispatchResult] =
       params match
         case None =>
-          ZIO.succeed(DispatchResult.Single(Left(ErrorResponse.invalidParams(
-            id,
-            "Missing params"
-          ))))
+          ZIO.succeed(DispatchResult.Single(
+            ResponsePayload.failure(id, McpError.InvalidParams("Missing params"))
+          ))
         case Some(json) =>
           json.as[ToolCallParams] match
             case Left(err) =>
-              ZIO.succeed(DispatchResult.Single(Left(ErrorResponse.invalidParams(id, err))))
+              ZIO.succeed(DispatchResult.Single(
+                ResponsePayload.failure(id, McpError.InvalidParams(err))
+              ))
             case Right(callParams) =>
               val args = callParams.arguments.getOrElse(Json.Obj())
               for
@@ -153,26 +166,19 @@ object ToolExecutor:
         ctx: ToolContext
     ): UIO[DispatchResult] =
       (tracing.setAttribute("mcp.tool.name", name) *>
-        toolRegistry
-          .call(name, args, ctx)
-          .map(content =>
-            DispatchResult.Single(Right(Response.success(
-              id,
-              contentToResult(content).toJsonAST.toOption.get
-            )))
-          )
-          .catchAll {
-            case err: ToolError.InvalidInput =>
-              ZIO.succeed(DispatchResult.Single(Left(ErrorResponse.invalidParams(id, err.message))))
-            case err =>
-              ZIO.succeed(DispatchResult.Single(Left(ErrorResponse.internalError(id, err.message))))
-          }
+        runToolToPayload(id, name, args, ctx)
+          .map(DispatchResult.Single(_))
           .tap(_ => emitToolEvent(ctx.sessionId, name))) @@ span("mcp.tool.call")
 
     /** Streaming tool call -- progress token present, returns Streaming.
       *
-      * Uses a sentinel value (empty string) to signal end-of-stream rather than queue.shutdown,
-      * which discards pending elements.
+      * The queue carries domain [[StreamFrame]]s; the stream terminates after
+      * the first `Final`. The transport adapter encodes each frame to its wire
+      * representation.
+      *
+      * Concurrency is bounded by `maxInFlight`. If the budget is exhausted,
+      * the call is rejected up front with a JSON-RPC custom error rather than
+      * accumulating fiber state.
       */
     private def callStreaming(
         id: RequestId,
@@ -183,58 +189,115 @@ object ToolExecutor:
     ): UIO[DispatchResult] =
       (tracing.setAttribute("mcp.tool.name", name) *>
         tracing.setAttribute("mcp.tool.streaming", true) *>
-        (for
-          queue <- Queue.unbounded[String]
-          _ <- ZIO.logDebug("Queue created")
-          reporter = makeProgressReporter(token, queue)
-          fiber <- ProgressReporter.current.locally(reporter)(for
-            _ <- ZIO.logDebug("Tool execution starting")
-            result <- toolRegistry
-              .call(name, args, ctx)
-              .map(content =>
-                Right(
-                  Response.success(id, contentToResult(content).toJsonAST.toOption.get)
-                ): Either[ErrorResponse, Response]
+        reserveSlot(id).flatMap {
+          case false =>
+            ZIO.succeed(DispatchResult.Single(ResponsePayload.failure(
+              id,
+              McpError.Custom(
+                code = -32099,
+                message = s"Server overloaded: $maxInFlight concurrent tool calls already in flight"
               )
-              .catchAll {
-                case err: ToolError.InvalidInput =>
-                  ZIO.succeed(Left(ErrorResponse.invalidParams(id, err.message)))
-                case err => ZIO.succeed(Left(ErrorResponse.internalError(id, err.message)))
-              }
-            _ <- ZIO.logDebug("Tool execution completed")
-            finalJson = result match
-              case Right(r) => r.toJson
-              case Left(e)  => e.toJson
-            _ <- queue.offer(finalJson)
-            _ <- ZIO.logDebug("Final response offered")
-            _ <- queue.offer("") // sentinel: end of stream
-            _ <- ZIO.logDebug("Sentinel offered")
-          yield ()).catchAllCause { cause =>
-            ZIO.logDebug("Caught cause, offering sentinel") @@
-              ZIOAspect.annotated("interrupted", cause.isInterrupted.toString) *>
-              queue.offer("").ignore
-          }.forkDaemon
-          _ <- inFlight.update(_ + (id -> fiber))
-          _ <- ZIO.logDebug("Fiber registered in inFlight")
-          stream = ZStream.fromQueue(queue)
-            .takeWhile(_.nonEmpty)
-            .ensuring(ZIO.logDebug("Stream finalized") *> inFlight.update(_ - id) *> queue.shutdown)
-        yield DispatchResult.Streaming(stream))) @@
+            )))
+          case true =>
+            for
+              queue   <- Queue.unbounded[StreamFrame]
+              reporter = makeProgressReporter(token, queue)
+              fiber   <- ProgressReporter.current.locally(reporter)(runToolStreaming(id, name, args, ctx, queue)).forkDaemon
+              _       <- inFlight.update(_ + (id -> fiber))
+              _       <- ZIO.logDebug("Fiber registered in inFlight")
+            yield DispatchResult.Streaming(streamFor(id, queue))
+        }) @@
         span("mcp.tool.call") @@
         ZIOAspect.annotated("requestId", id.toString) @@
         ZIOAspect.annotated("tool", name) @@
         ZIOAspect.annotated("progressToken", token.toString)
 
-    private def makeProgressReporter(token: Json, queue: Queue[String]): ProgressReporter =
+    /** Run a tool, mapping success/typed-error to a [[ResponsePayload]].
+      * Used by both sync and streaming paths.
+      */
+    private def runToolToPayload(
+        id: RequestId,
+        name: String,
+        args: Json,
+        ctx: ToolContext
+    ): UIO[ResponsePayload] =
+      toolRegistry
+        .call(name, args, ctx)
+        .map(content => encodeResult(id, contentToResult(content)))
+        .catchAll {
+          case err: ToolError.InvalidInput =>
+            ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams(err.message)))
+          case err =>
+            ZIO.succeed(ResponsePayload.failure(id, McpError.InternalError(err.message)))
+        }
+
+    /** Streaming variant: run the tool, push the final payload to the queue,
+      * surface interruption as a synthetic Final so the consumer's stream
+      * always terminates cleanly.
+      */
+    private def runToolStreaming(
+        id: RequestId,
+        name: String,
+        args: Json,
+        ctx: ToolContext,
+        queue: Queue[StreamFrame]
+    ): UIO[Unit] =
+      (for
+        _       <- ZIO.logDebug("Tool execution starting")
+        payload <- runToolToPayload(id, name, args, ctx)
+        _       <- ZIO.logDebug("Tool execution completed")
+        _       <- queue.offer(StreamFrame.Final(payload))
+        _       <- ZIO.logDebug("Final frame offered")
+      yield ()).catchAllCause { cause =>
+        ZIO.logDebug("Caught cause, offering interrupted final") @@
+          ZIOAspect.annotated("interrupted", cause.isInterrupted.toString) *>
+          queue
+            .offer(StreamFrame.Final(
+              ResponsePayload.failure(id, McpError.InternalError("tool execution interrupted"))
+            ))
+            .ignore
+      }
+
+    /** Build the SSE-emitted stream for a streaming call: drains until the
+      * first `Final`, then unregisters, releases the budget slot, and shuts
+      * down the queue.
+      */
+    private def streamFor(id: RequestId, queue: Queue[StreamFrame]): ZStream[Any, Nothing, StreamFrame] =
+      ZStream
+        .fromQueue(queue)
+        .takeUntil:
+          case _: StreamFrame.Final => true
+          case _                    => false
+        .ensuring(
+          ZIO.logDebug("Stream finalized") *>
+            inFlight.update(_ - id) *>
+            inFlightCount.update(_ - 1) *>
+            queue.shutdown
+        )
+
+    /** Atomically reserve one budget slot. Returns true if a slot was
+      * available (and consumed) or false if the cap is reached. The slot is
+      * released by [[streamFor]]'s `.ensuring` block when the stream
+      * finalizes. We use a separate counter `Ref` rather than checking the
+      * map size to avoid the placeholder-fiber gymnastics.
+      */
+    private def reserveSlot(id: RequestId): UIO[Boolean] =
+      inFlightCount.modify { n =>
+        if n >= maxInFlight then (false, n)
+        else (true, n + 1)
+      }
+
+    private def makeProgressReporter(token: Json, queue: Queue[StreamFrame]): ProgressReporter =
       new ProgressReporter:
         def report(progress: Double, total: Option[Double], message: Option[String]): UIO[Unit] =
           val notification = ProgressNotification(token, progress, total, message)
-          val jsonRpc = Json.Obj(
-            "jsonrpc" -> Json.Str("2.0"),
-            "method" -> Json.Str("notifications/progress"),
-            "params" -> notification.toJsonAST.toOption.get
-          )
-          queue.offer(jsonRpc.toJson).unit
+          notification.toJsonAST match
+            case Right(params) =>
+              queue.offer(StreamFrame.Notification("notifications/progress", params)).unit
+            case Left(_) =>
+              // ProgressNotification is a fixed shape; encoding can't realistically fail.
+              // Drop the notification rather than failing the whole stream.
+              ZIO.unit
 
     private def contentToResult(content: Content): ToolCallResult =
       content match
@@ -258,3 +321,12 @@ object ToolExecutor:
               )
             )
             messageRouter.publish(sid, notification.toJson).unit
+
+    private def encodeResult[A: JsonEncoder](id: RequestId, value: A): ResponsePayload =
+      value.toJsonAST match
+        case Right(json) => ResponsePayload.success(id, json)
+        case Left(err) =>
+          ResponsePayload.failure(
+            id,
+            McpError.InternalError(s"failed to encode result: $err")
+          )

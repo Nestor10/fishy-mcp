@@ -2,13 +2,13 @@ package fishy.mcp.adapters.inbound.http
 
 import fishy.mcp.application.ports.{MessageRouter, SessionStore}
 import fishy.mcp.application.usecase.{ClientRequester, McpDispatcher}
-import fishy.mcp.domain.model.DispatchResult
+import fishy.mcp.domain.model.{DispatchResult, McpError, RequestId, ResponsePayload}
 import fishy.mcp.adapters.protocol.jsonrpc.{
+  DispatchResultEncoder,
   Error as JsonRpcError,
   ErrorCode,
   ErrorResponse,
   Request as McpRequest,
-  RequestId,
   Response as McpResponse
 }
 import zio.*
@@ -17,8 +17,11 @@ import zio.json.*
 import zio.json.ast.Json
 import zio.stream.ZStream
 
-/** Handles POST /mcp: JSON-RPC single and batch dispatch, session creation, client response
-  * correlation, and direct response.
+/** Handles POST /mcp: JSON-RPC single and batch dispatch, session creation,
+  * client response correlation, and direct response.
+  *
+  * Wire encoding lives in [[DispatchResultEncoder]]; this handler handles
+  * HTTP shaping only.
   */
 private[http] final case class McpRequestHandler(
     dispatcher: McpDispatcher,
@@ -34,10 +37,10 @@ private[http] final case class McpRequestHandler(
       ZIO.logAnnotate("sessionId", sessionId.getOrElse("none")) {
         ZIO.logSpan("handleMcpRequest") {
           for
-            body <- request.body.asString
-            _ <- ZIO.logDebug(s"body length=${body.length}")
+            body     <- request.body.asString
+            _        <- ZIO.logDebug(s"body length=${body.length}")
             response <- processRequest(body, sessionId)
-            _ <- ZIO.logDebug(s"response status=${response.status.code}")
+            _        <- ZIO.logDebug(s"response status=${response.status.code}")
           yield response
         }
       }
@@ -53,24 +56,20 @@ private[http] final case class McpRequestHandler(
   ): ZIO[Any, Throwable, Response] =
     Json.decoder.decodeJson(body) match
       case Left(_) =>
-        val errorResponse = ErrorResponse.parseError(RequestId.Null)
-        ZIO.succeed(Response.json(errorResponse.toJson).status(Status.BadRequest))
+        ZIO.succeed(jsonResponse(parseError, Status.BadRequest))
       case Right(Json.Arr(elements)) =>
         processBatch(elements, sessionId)
       case Right(json) =>
-        // Detect if this is a client response (has result/error, no method)
         val obj = json.asObject
         val hasMethod = obj.exists(_.contains("method"))
         val hasResult = obj.exists(_.contains("result"))
-        val hasError = obj.exists(_.contains("error"))
+        val hasError  = obj.exists(_.contains("error"))
         if !hasMethod && (hasResult || hasError) then
           handleClientResponse(json)
         else
           body.fromJson[McpRequest] match
             case Left(_) =>
-              ZIO.succeed(Response.json(ErrorResponse.invalidRequest(RequestId.Null).toJson).status(
-                Status.BadRequest
-              ))
+              ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
             case Right(mcpRequest) =>
               processSingle(mcpRequest, sessionId)
 
@@ -87,12 +86,12 @@ private[http] final case class McpRequestHandler(
       ZIO.logAnnotate("requestId", requestId) {
         ZIO.logSpan("processSingle") {
           for
-            _ <- ZIO.logDebug("dispatching")
-            result <- dispatcher.dispatch(mcpRequest, sessionId)
-            _ <- ZIO.logDebug(s"dispatch returned ${result.getClass.getSimpleName}")
+            _            <- ZIO.logDebug("dispatching")
+            result       <- dispatcher.dispatch(mcpRequest, sessionId)
+            _            <- ZIO.logDebug(s"dispatch returned ${result.getClass.getSimpleName}")
             newSessionId <- handleSession(mcpRequest.method, sessionId)
-            response <- buildResponse(result)
-            _ <- ZIO.logDebug(s"response status=${response.status.code}")
+            response     <- buildResponse(result)
+            _            <- ZIO.logDebug(s"response status=${response.status.code}")
             withSession = newSessionId match
               case Some(sid) => response.addHeader(Header.Custom(McpSessionIdHeader, sid))
               case None      => response
@@ -110,31 +109,29 @@ private[http] final case class McpRequestHandler(
       sessionId: Option[String]
   ): ZIO[Any, Throwable, Response] =
     if elements.isEmpty then
-      ZIO.succeed(
-        Response.json(ErrorResponse.invalidRequest(RequestId.Null).toJson).status(Status.BadRequest)
-      )
+      ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
     else
       val requests = elements.map(_.toJson.fromJson[McpRequest])
       if requests.collect { case Right(r) => r }.exists(_.method == "initialize") then
-        ZIO.succeed(Response.json(
+        ZIO.succeed(jsonResponse(
           ErrorResponse(
             RequestId.Null,
             ErrorCode.InvalidRequest,
             "initialize must not be sent inside a batch"
-          ).toJson
-        ).status(Status.BadRequest))
+          ).toJson,
+          Status.BadRequest
+        ))
       else
         for
           results <- ZIO.foreach(elements) { elem =>
             elem.toJson.fromJson[McpRequest] match
               case Left(_) =>
-                val err = ErrorResponse.invalidRequest(RequestId.Null)
-                ZIO.succeed(Some(err.toJsonAST.toOption.get))
+                ZIO.succeed(Some(asJson(invalidRequestError)))
               case Right(req) =>
                 dispatcher.dispatch(req, sessionId).flatMap(_.toOption).map {
-                  case Some(Right(success)) => Some(success.toJsonAST.toOption.get)
-                  case Some(Left(error))    => Some(error.toJsonAST.toOption.get)
-                  case None                 => None
+                  case Some(payload) =>
+                    Some(asJson(DispatchResultEncoder.encodePayloadJson(payload)))
+                  case None => None
                 }
           }
           responses = results.flatten
@@ -151,14 +148,17 @@ private[http] final case class McpRequestHandler(
       result match
         case DispatchResult.Empty =>
           ZIO.logDebug("empty result").as(Response.status(Status.Accepted))
-        case DispatchResult.Single(Right(success)) =>
-          ZIO.logDebug("returning success").as(Response.json(success.toJson))
-        case DispatchResult.Single(Left(error)) =>
-          ZIO.logDebug("returning error").as(Response.json(error.toJson).status(Status.BadRequest))
+        case DispatchResult.Single(payload) =>
+          val body   = DispatchResultEncoder.encodePayloadJson(payload)
+          val status = if payload.outcome.isLeft then Status.BadRequest else Status.Ok
+          ZIO.logDebug(s"returning ${if payload.outcome.isLeft then "error" else "success"}")
+            .as(Response.json(body).status(status))
         case DispatchResult.Streaming(events) =>
           ZIO.logDebug("returning SSE stream") *>
             ZIO.succeed {
-              val sseStream = events.map(json => ServerSentEvent(data = json))
+              val sseStream = events.map { frame =>
+                ServerSentEvent(data = DispatchResultEncoder.encodeFrameJson(frame))
+              }
               Response.fromServerSentEvents(sseStream)
             }
     }
@@ -175,9 +175,7 @@ private[http] final case class McpRequestHandler(
       case _                 => ""
 
     if requestId.isEmpty then
-      ZIO.succeed(Response.json(
-        ErrorResponse.invalidRequest(RequestId.Null).toJson
-      ).status(Status.BadRequest))
+      ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
     else
       val result: Either[JsonRpcError, Json] = obj.get("error") match
         case Some(errorJson) =>
@@ -191,13 +189,14 @@ private[http] final case class McpRequestHandler(
         clientRequester.completeRequest(requestId, result).map { completed =>
           if completed then Response.status(Status.Accepted)
           else
-            Response.json(
+            jsonResponse(
               ErrorResponse(
                 RequestId.StringId(requestId),
                 ErrorCode.InvalidRequest,
                 "No pending request with this ID"
-              ).toJson
-            ).status(Status.BadRequest)
+              ).toJson,
+              Status.BadRequest
+            )
         }
 
   // ---------------------------------------------------------------------------
@@ -211,3 +210,23 @@ private[http] final case class McpRequestHandler(
     method match
       case "initialize" => sessionStore.create().map(Some(_))
       case _            => ZIO.succeed(existingSessionId)
+
+  // ---------------------------------------------------------------------------
+  // Helpers
+  // ---------------------------------------------------------------------------
+
+  private def jsonResponse(body: String, status: Status): Response =
+    Response.json(body).status(status)
+
+  /** Parse a serialized JSON-RPC response/error body back to its AST so it can
+    * be embedded in a batch array. The serialization just happened immediately
+    * upstream so this can't realistically fail.
+    */
+  private def asJson(body: String): Json =
+    Json.decoder.decodeJson(body).getOrElse(Json.Obj())
+
+  private val parseError: String =
+    ErrorResponse.parseError(RequestId.Null).toJson
+
+  private val invalidRequestError: String =
+    ErrorResponse.invalidRequest(RequestId.Null).toJson

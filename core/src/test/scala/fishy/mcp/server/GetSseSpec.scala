@@ -20,10 +20,10 @@ import fishy.mcp.application.usecase.{
 }
 import fishy.mcp.bootstrap.TracingLayers
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.domain.model.DispatchResult
 import fishy.mcp.dsl.*
-import fishy.mcp.domain.model.{Content, ToolContext}
+import fishy.mcp.domain.model.{Content, RequestId, ToolContext}
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -208,7 +208,7 @@ object GetSseSpec extends ZIOSpecDefault:
       test("server advertises listChanged in capabilities") {
         for
           result <- McpDispatcher.dispatch(initRequest()).flatMap(_.toOption)
-          json = result.get.toOption.get.result.toString
+          json = result.get.outcome.toOption.get.toString
         yield assertTrue(
           json.contains("listChanged"),
           json.contains("true")

@@ -8,6 +8,6 @@ final case class ToolContext(
     sessionId: Option[String],
     meta: Option[Json],
     auth: Option[AuthContext] = None,
-    sendClientRequest: Option[(String, Json) => Task[Json]] = None,
+    sendClientRequest: Option[(String, Json) => IO[ClientRequesterError, Json]] = None,
     notifyResourceUpdated: String => UIO[Unit] = _ => ZIO.unit
 )

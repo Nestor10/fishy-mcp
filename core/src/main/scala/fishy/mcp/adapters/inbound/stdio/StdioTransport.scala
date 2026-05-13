@@ -1,7 +1,7 @@
 package fishy.mcp.adapters.inbound.stdio
 
 import fishy.mcp.application.usecase.McpDispatcher
-import fishy.mcp.domain.model.DispatchResult.*
+import fishy.mcp.domain.model.{DispatchResult, RequestId}
 import fishy.mcp.adapters.protocol.jsonrpc.*
 import zio.*
 import zio.json.*
@@ -11,10 +11,11 @@ import java.io.IOException
 
 /** NDJSON stdio transport.
   *
-  * Reads JSON-RPC from stdin, dispatches, writes responses to stdout. Logs go to stderr.
+  * Reads JSON-RPC from stdin, dispatches, writes responses to stdout. Logs go
+  * to stderr. Streaming results are drained to the final payload (no SSE on
+  * stdio).
   */
 trait StdioTransport:
-
   def run: IO[IOException, Unit]
 
 object StdioTransport:
@@ -40,13 +41,10 @@ object StdioTransport:
   private final case class Live(dispatcher: McpDispatcher) extends StdioTransport:
 
     def run: IO[IOException, Unit] =
-      val input = readLines
-      val output = writeResponses
-
-      input
+      readLines
         .mapZIO(processLine)
         .collect { case Some(response) => response }
-        .run(output)
+        .run(writeResponses)
         .unit
 
     private def readLines: ZStream[Any, IOException, String] =
@@ -63,20 +61,7 @@ object StdioTransport:
       }
 
     private def processLine(line: String): UIO[Option[String]] =
-      if line.trim.isEmpty then ZIO.none
-      else
-        line.fromJson[Request] match
-          case Left(parseErr) =>
-            // Parse error - return error response
-            val errorResponse = ErrorResponse.parseError(RequestId.Null)
-            ZIO.some(errorResponse.toJson)
-
-          case Right(request) =>
-            dispatcher.dispatch(request, None).flatMap(_.toOption).map {
-              case Some(Right(response)) => Some(response.toJson)
-              case Some(Left(error))     => Some(error.toJson)
-              case None                  => None
-            }
+      StdioTransport.processLine(dispatcher)(line)
 
   // ---------------------------------------------------------------------------
   // Test utilities
@@ -101,12 +86,9 @@ object StdioTransport:
     else
       line.fromJson[Request] match
         case Left(_) =>
-          val errorResponse = ErrorResponse.parseError(RequestId.Null)
-          ZIO.some(errorResponse.toJson)
-
+          ZIO.some(ErrorResponse.parseError(RequestId.Null).toJson)
         case Right(request) =>
           dispatcher.dispatch(request, None).flatMap(_.toOption).map {
-            case Some(Right(response)) => Some(response.toJson)
-            case Some(Left(error))     => Some(error.toJson)
-            case None                  => None
+            case Some(payload) => Some(DispatchResultEncoder.encodePayloadJson(payload))
+            case None          => None
           }

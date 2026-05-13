@@ -6,7 +6,7 @@ import fishy.mcp.domain.model.DispatchResult.*
 import fishy.mcp.dsl.Tool
 import fishy.mcp.domain.model.{Content, ToolContext}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -90,8 +90,9 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
             toolCallWithProgress("slow-task", Json.Obj("steps" -> Json.Num(3)), Json.Str("tok-1"))
           result <- dispatcher.dispatch(request("tools/call", Some(params)), None)
           events <- result match
-            case DispatchResult.Streaming(s) => s.runCollect
-            case _                           => ZIO.succeed(Chunk.empty[String])
+            case DispatchResult.Streaming(s) =>
+              s.map(DispatchResultEncoder.encodeFrameJson).runCollect
+            case _ => ZIO.succeed(Chunk.empty[String])
         yield
           // 3 progress notifications + 1 final response = 4 events
           val progressEvents = events.filter(_.contains("notifications/progress"))
@@ -110,8 +111,9 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
           params = toolCallWithProgress("slow-task", Json.Obj("steps" -> Json.Num(2)), Json.Num(42))
           result <- dispatcher.dispatch(request("tools/call", Some(params)), None)
           events <- result match
-            case DispatchResult.Streaming(s) => s.runCollect
-            case _                           => ZIO.succeed(Chunk.empty[String])
+            case DispatchResult.Streaming(s) =>
+              s.map(DispatchResultEncoder.encodeFrameJson).runCollect
+            case _ => ZIO.succeed(Chunk.empty[String])
         yield
           val progressEvents = events.filter(_.contains("notifications/progress"))
           assertTrue(
@@ -135,8 +137,8 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
           params = toolCallParams("slow-task", Json.Obj("steps" -> Json.Num(1)))
           result <- dispatcher.dispatch(request("tools/call", Some(params)), None)
         yield result match
-          case DispatchResult.Single(Right(r)) =>
-            assertTrue(r.result.toString.contains("Completed 1 steps"))
+          case DispatchResult.Single(p) if p.outcome.isRight =>
+            assertTrue(p.outcome.toOption.get.toString.contains("Completed 1 steps"))
           case _ => assertTrue(false)
       }
     ),
@@ -146,10 +148,10 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher(List(progressTool))
           params =
             toolCallWithProgress("slow-task", Json.Obj("steps" -> Json.Num(2)), Json.Str("t"))
-          result <-
-            dispatcher.dispatch(request("tools/call", Some(params)), None).flatMap(_.toOption)
+          dispatchResult <- dispatcher.dispatch(request("tools/call", Some(params)), None)
+          result         <- dispatchResult.toOption
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(json.contains("Completed 2 steps"))
       }
     ),
@@ -167,7 +169,8 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
             }
             collectFiber <- (result match
               case DispatchResult.Streaming(s) =>
-                ZIO.logDebug("Starting stream collection") *> s.runCollect
+                ZIO.logDebug("Starting stream collection") *>
+                  s.map(DispatchResultEncoder.encodeFrameJson).runCollect
               case _ => ZIO.succeed(Chunk.empty[String])
             ).fork
             _ <- ZIO.yieldNow

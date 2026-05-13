@@ -1,6 +1,6 @@
 package fishy.mcp.adapters.inbound.http
 
-import fishy.mcp.adapters.protocol.mcp.ServerCapabilities
+import fishy.mcp.domain.model.mcp.ServerCapabilities
 import fishy.mcp.application.ports.{
   EventReplay,
   MessageRouter,
@@ -44,7 +44,7 @@ object HttpTransport:
   // ---------------------------------------------------------------------------
 
   val layer: URLayer[
-    McpDispatcher & SessionStore & MessageRouter & EventReplay & HttpSecurityPolicy & ClientRequester & SessionHooks & SubscriptionRegistry & ServerCapabilities,
+    McpDispatcher & SessionStore & MessageRouter & EventReplay & HttpSecurityPolicy & ClientRequester & SessionHooks & SubscriptionRegistry & ServerCapabilities & HttpExtraRoutes,
     HttpTransport
   ] =
     ZLayer.fromFunction(
@@ -57,7 +57,8 @@ object HttpTransport:
           clientRequester: ClientRequester,
           sessionHooks: SessionHooks,
           subscriptionRegistry: SubscriptionRegistry,
-          capabilities: ServerCapabilities
+          capabilities: ServerCapabilities,
+          extraRoutes: HttpExtraRoutes
       ) =>
         Live(
           dispatcher,
@@ -68,7 +69,8 @@ object HttpTransport:
           clientRequester,
           sessionHooks,
           subscriptionRegistry,
-          capabilities
+          capabilities,
+          extraRoutes
         )
     )
 
@@ -85,7 +87,8 @@ object HttpTransport:
       clientRequester: ClientRequester,
       sessionHooks: SessionHooks,
       subscriptionRegistry: SubscriptionRegistry,
-      capabilities: ServerCapabilities
+      capabilities: ServerCapabilities,
+      extraRoutes: HttpExtraRoutes
   ) extends HttpTransport:
 
     private val requestHandler = McpRequestHandler(dispatcher, sessionStore, clientRequester)
@@ -144,7 +147,7 @@ object HttpTransport:
         }
       )
 
-      mcpRoutes ++ healthRoutes
+      mcpRoutes ++ healthRoutes ++ extraRoutes.routes
 
     def serve(port: Int): ZIO[Any, Throwable, Nothing] =
       Server.serve(routes).provide(Server.defaultWithPort(port))

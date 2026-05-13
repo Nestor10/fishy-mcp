@@ -1,7 +1,7 @@
 package fishy.mcp.integration
 
 import fishy.mcp.adapters.inbound.http.{HttpSecurityPolicy, HttpTransport}
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.adapters.storage.{InMemorySubscriptionRegistry, RedisBackend}
 import fishy.mcp.application.ports.*
 import fishy.mcp.application.usecase.*

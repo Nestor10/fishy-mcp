@@ -4,7 +4,7 @@ import fishy.mcp.application.usecase.McpDispatcher
 import fishy.mcp.domain.model.*
 import fishy.mcp.dsl.{Prompt, Resource, Tool}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -64,7 +64,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher(resources = List(readmeResource))
           result <- dispatcher.dispatch(request("resources/list"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("readme"),
             json.contains("file:///readme.md"),
@@ -76,7 +76,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher()
           result <- dispatcher.dispatch(request("resources/list"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(json.contains("\"resources\":[]"))
       }
     ),
@@ -89,7 +89,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
             None
           ).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("# Hello World"),
             json.contains("file:///readme.md")
@@ -105,15 +105,15 @@ object ResourcePromptSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isLeft,
-            inner.left.toOption.get.error.code == -32002
+            inner.outcome.isLeft,
+            inner.outcome.left.toOption.get.code == -32002
           )
       },
       test("returns error for missing params") {
         for
           dispatcher <- makeDispatcher(resources = List(readmeResource))
           result <- dispatcher.dispatch(request("resources/read", None), None).flatMap(_.toOption)
-        yield assertTrue(result.get.isLeft)
+        yield assertTrue(result.get.outcome.isLeft)
       }
     ),
     suite("prompts/list")(
@@ -122,7 +122,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher(prompts = List(greetPrompt, summaryPrompt))
           result <- dispatcher.dispatch(request("prompts/list"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("greet"),
             json.contains("summary"),
@@ -134,7 +134,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher()
           result <- dispatcher.dispatch(request("prompts/list"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(json.contains("\"prompts\":[]"))
       }
     ),
@@ -153,7 +153,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
             None
           ).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("Hello, Alice!"),
             json.contains("user"),
@@ -168,7 +168,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
             None
           ).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("Please provide a summary."),
             json.contains("user")
@@ -184,15 +184,15 @@ object ResourcePromptSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isLeft,
-            inner.left.toOption.get.error.message.contains("not found")
+            inner.outcome.isLeft,
+            inner.outcome.left.toOption.get.message.contains("not found")
           )
       },
       test("returns error for missing params") {
         for
           dispatcher <- makeDispatcher(prompts = List(greetPrompt))
           result <- dispatcher.dispatch(request("prompts/get", None), None).flatMap(_.toOption)
-        yield assertTrue(result.get.isLeft)
+        yield assertTrue(result.get.outcome.isLeft)
       }
     ),
     suite("resources/templates/list")(
@@ -204,8 +204,8 @@ object ResourcePromptSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isRight,
-            inner.toOption.get.result.toString.contains("\"resourceTemplates\":[]")
+            inner.outcome.isRight,
+            inner.outcome.toOption.get.toString.contains("\"resourceTemplates\":[]")
           )
       }
     ),
@@ -215,7 +215,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher(resources = List(readmeResource))
           result <- dispatcher.dispatch(request("initialize"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("\"resources\""),
             !json.contains("\"tools\""),
@@ -227,7 +227,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           dispatcher <- makeDispatcher(prompts = List(greetPrompt))
           result <- dispatcher.dispatch(request("initialize"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("\"prompts\""),
             !json.contains("\"tools\""),
@@ -253,7 +253,7 @@ object ResourcePromptSpec extends ZIOSpecDefault:
           )
           result <- dispatcher.dispatch(request("initialize"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("\"tools\""),
             json.contains("\"resources\""),

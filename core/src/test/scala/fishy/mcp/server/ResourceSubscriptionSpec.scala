@@ -6,7 +6,7 @@ import fishy.mcp.application.usecase.{McpDispatcher, NotificationSender}
 import fishy.mcp.domain.model.*
 import fishy.mcp.dsl.Resource
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -54,7 +54,7 @@ object ResourceSubscriptionSpec extends ZIOSpecDefault:
             request("resources/subscribe", Some(Json.Obj("uri" -> Json.Str("server:///status")))),
             Some(sid)
           ).flatMap(_.toOption)
-        yield assertTrue(result.get.isRight)
+        yield assertTrue(result.get.outcome.isRight)
       },
       test("returns error when params missing") {
         for
@@ -65,7 +65,7 @@ object ResourceSubscriptionSpec extends ZIOSpecDefault:
             request("resources/subscribe", None),
             Some(sid)
           ).flatMap(_.toOption)
-        yield assertTrue(result.get.isLeft)
+        yield assertTrue(result.get.outcome.isLeft)
       },
       test("returns error when no session") {
         for
@@ -75,8 +75,8 @@ object ResourceSubscriptionSpec extends ZIOSpecDefault:
             None
           ).flatMap(_.toOption)
         yield assertTrue(
-          result.get.isLeft,
-          result.get.left.toOption.get.error.message.contains("session")
+          result.get.outcome.isLeft,
+          result.get.outcome.left.toOption.get.message.contains("session")
         )
       }
     ),
@@ -98,7 +98,7 @@ object ResourceSubscriptionSpec extends ZIOSpecDefault:
             ),
             Some(sid)
           ).flatMap(_.toOption)
-        yield assertTrue(result.get.isRight)
+        yield assertTrue(result.get.outcome.isRight)
       }
     ),
     suite("capabilities")(
@@ -116,7 +116,7 @@ object ResourceSubscriptionSpec extends ZIOSpecDefault:
             None
           ).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("\"subscribe\":true"),
             json.contains("\"listChanged\":true")

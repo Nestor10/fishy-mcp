@@ -5,7 +5,7 @@ import fishy.mcp.application.usecase.McpDispatcher
 import fishy.mcp.domain.model.*
 import fishy.mcp.dsl.Tool
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -81,7 +81,7 @@ object AuthPropagationSpec extends ZIOSpecDefault:
           (dispatcher, _) <- makeDispatcher(List(whoamiTool))
           result <- dispatcher.dispatch(toolCallRequest("whoami"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.toJson
+          val json = result.get.outcome.toOption.get.toJson
           assertTrue(json.contains("anonymous"))
       },
       test("tool receives auth when FiberRef is set") {
@@ -93,7 +93,7 @@ object AuthPropagationSpec extends ZIOSpecDefault:
           result <- dispatcher.dispatch(toolCallRequest("whoami"), None).flatMap(_.toOption)
           _ <- AuthFiberRef.currentAuth.set(None) // cleanup
         yield
-          val json = result.get.toOption.get.toJson
+          val json = result.get.outcome.toOption.get.toJson
           assertTrue(
             json.contains("sub=alice"),
             json.contains("email=alice@corp.com"),
@@ -112,8 +112,8 @@ object AuthPropagationSpec extends ZIOSpecDefault:
           result2 <- dispatcher.dispatch(toolCallRequest("whoami"), None).flatMap(_.toOption)
           _ <- AuthFiberRef.currentAuth.set(None)
         yield
-          val json1 = result1.get.toOption.get.toJson
-          val json2 = result2.get.toOption.get.toJson
+          val json1 = result1.get.outcome.toOption.get.toJson
+          val json2 = result2.get.outcome.toOption.get.toJson
           assertTrue(
             json1.contains("sub=alice"),
             json2.contains("sub=bob")

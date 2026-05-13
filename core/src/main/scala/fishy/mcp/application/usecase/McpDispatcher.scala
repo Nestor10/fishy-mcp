@@ -1,8 +1,8 @@
 package fishy.mcp.application.usecase
 
 import fishy.mcp.domain.model.*
-import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.adapters.protocol.jsonrpc.Request
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.application.ports.SessionStore
 import zio.*
 import zio.json.*
@@ -11,9 +11,13 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 /** JSON-RPC router for MCP.
   *
-  * Enforces the initialization gate and delegates to executor services. Init gate is backed by
-  * SessionStore for cross-instance consistency. When sessionId is None (sessionless HTTP or stdio),
-  * the gate is skipped.
+  * Enforces the initialization gate and delegates to executor services. Init
+  * gate is backed by SessionStore for cross-instance consistency. When
+  * sessionId is None (sessionless HTTP or stdio), the gate is skipped.
+  *
+  * Output is domain-shaped ([[DispatchResult]] / [[ResponsePayload]] /
+  * [[StreamFrame]]). The transport adapter renders to the wire via
+  * `DispatchResultEncoder`.
   */
 trait McpDispatcher:
 
@@ -43,12 +47,12 @@ object McpDispatcher:
   ] =
     ZLayer.fromZIO {
       for
-        store <- ZIO.service[SessionStore]
-        toolExec <- ZIO.service[ToolExecutor]
-        resExec <- ZIO.service[ResourceExecutor]
+        store      <- ZIO.service[SessionStore]
+        toolExec   <- ZIO.service[ToolExecutor]
+        resExec    <- ZIO.service[ResourceExecutor]
         promptExec <- ZIO.service[PromptExecutor]
-        clientReq <- ZIO.service[ClientRequester]
-        tracing <- ZIO.service[Tracing]
+        clientReq  <- ZIO.service[ClientRequester]
+        tracing    <- ZIO.service[Tracing]
       yield Live(
         serverInfo,
         capabilities,
@@ -98,19 +102,18 @@ object McpDispatcher:
                   else if preInitMethods.contains(method) then
                     handleMethod(method, id, request.params, sessionId)
                   else
-                    // Init gate: only enforced when a sessionId is present
                     sessionId match
                       case None => handleMethod(method, id, request.params, sessionId)
                       case Some(sid) =>
                         sessionStore.isInitialized(sid).flatMap {
                           case true => handleMethod(method, id, request.params, sessionId)
-                          case false => ZIO.succeed(DispatchResult.Single(Left(
-                              ErrorResponse(
+                          case false =>
+                            ZIO.succeed(DispatchResult.Single(
+                              ResponsePayload.failure(
                                 id,
-                                ErrorCode.InvalidRequest,
-                                "Server not initialized. Send initialize first."
+                                McpError.InvalidRequest("Server not initialized. Send initialize first.")
                               )
-                            )))
+                            ))
                         }
                 }
               }
@@ -134,24 +137,26 @@ object McpDispatcher:
         sessionId: Option[String]
     ): UIO[DispatchResult] =
       method match
-        case "initialize" => handleInitialize(id, params, sessionId).map(DispatchResult.Single(_))
-        case "ping"       => handlePing(id).map(DispatchResult.Single(_))
-        case "tools/list" => toolExecutor.list(id).map(DispatchResult.Single(_))
-        case "tools/call" => toolExecutor.call(id, params, sessionId)
+        case "initialize"     => handleInitialize(id, params, sessionId).map(DispatchResult.Single(_))
+        case "ping"           => handlePing(id).map(DispatchResult.Single(_))
+        case "tools/list"     => toolExecutor.list(id).map(DispatchResult.Single(_))
+        case "tools/call"     => toolExecutor.call(id, params, sessionId)
         case "resources/list" => resourceExecutor.list(id).map(DispatchResult.Single(_))
         case "resources/read" => resourceExecutor.read(id, params).map(DispatchResult.Single(_))
         case "resources/templates/list" =>
           resourceExecutor.templatesList(id).map(DispatchResult.Single(_))
-        case "resources/subscribe" => ZIO.logDebug(
-            s"resources/subscribe called: params=$params session=$sessionId"
-          ) *> resourceExecutor.subscribe(id, params, sessionId).map(DispatchResult.Single(_))
-        case "resources/unsubscribe" => ZIO.logDebug(
-            s"resources/unsubscribe called: params=$params session=$sessionId"
-          ) *> resourceExecutor.unsubscribe(id, params, sessionId).map(DispatchResult.Single(_))
+        case "resources/subscribe" =>
+          ZIO.logDebug(s"resources/subscribe called: params=$params session=$sessionId") *>
+            resourceExecutor.subscribe(id, params, sessionId).map(DispatchResult.Single(_))
+        case "resources/unsubscribe" =>
+          ZIO.logDebug(s"resources/unsubscribe called: params=$params session=$sessionId") *>
+            resourceExecutor.unsubscribe(id, params, sessionId).map(DispatchResult.Single(_))
         case "prompts/list" => promptExecutor.list(id).map(DispatchResult.Single(_))
         case "prompts/get"  => promptExecutor.get(id, params).map(DispatchResult.Single(_))
         case other =>
-          ZIO.succeed(DispatchResult.Single(Left(ErrorResponse.methodNotFound(id, other))))
+          ZIO.succeed(DispatchResult.Single(
+            ResponsePayload.failure(id, McpError.MethodNotFound(other))
+          ))
 
     private def handleNotification(
         method: String,
@@ -192,8 +197,7 @@ object McpDispatcher:
         id: RequestId,
         params: Option[Json],
         sessionId: Option[String]
-    ): UIO[Either[ErrorResponse, Response]] =
-      // Parse and store client capabilities for server-to-client requests
+    ): UIO[ResponsePayload] =
       val storeClientCaps = (params, sessionId) match
         case (Some(json), Some(sid)) =>
           json.as[InitializeParams] match
@@ -202,27 +206,26 @@ object McpDispatcher:
             case Left(_) => ZIO.unit
         case _ => ZIO.unit
 
-      storeClientCaps *> {
-        val result = InitializeResult(
-          protocolVersion = "2024-11-05",
-          capabilities = capabilities,
-          serverInfo = serverInfo,
-          instructions = instructions
+      storeClientCaps.as(
+        encodeResult(
+          id,
+          InitializeResult(
+            protocolVersion = "2024-11-05",
+            capabilities = capabilities,
+            serverInfo = serverInfo,
+            instructions = instructions
+          )
         )
-        succeed(id, result.toJsonAST)
-      }
+      )
 
-    private def handlePing(id: RequestId): UIO[Either[ErrorResponse, Response]] =
-      succeed(id, Right(Json.Obj()))
+    private def handlePing(id: RequestId): UIO[ResponsePayload] =
+      ZIO.succeed(ResponsePayload.success(id, Json.Obj()))
 
-    // -------------------------------------------------------------------------
-    // Helpers
-    // -------------------------------------------------------------------------
-
-    private def succeed(
-        id: RequestId,
-        result: Either[String, Json]
-    ): UIO[Either[ErrorResponse, Response]] =
-      result match
-        case Right(json) => ZIO.succeed(Right(Response.success(id, json)))
-        case Left(err)   => ZIO.succeed(Left(ErrorResponse.internalError(id, err)))
+    private def encodeResult[A: JsonEncoder](id: RequestId, value: A): ResponsePayload =
+      value.toJsonAST match
+        case Right(json) => ResponsePayload.success(id, json)
+        case Left(err) =>
+          ResponsePayload.failure(
+            id,
+            McpError.InternalError(s"failed to encode result: $err")
+          )

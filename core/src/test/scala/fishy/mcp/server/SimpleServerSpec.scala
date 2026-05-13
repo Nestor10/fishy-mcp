@@ -1,6 +1,7 @@
 package fishy.mcp.server
 
 import fishy.mcp.application.usecase.McpDispatcher
+import fishy.mcp.bootstrap.AppConfig
 import fishy.mcp.domain.model.DispatchResult.*
 import zio.*
 import zio.json.*
@@ -11,9 +12,9 @@ import zio.test.*
 import zio.test.Assertion.*
 
 import fishy.mcp.dsl.*
-import fishy.mcp.domain.model.{Content, ToolContext}
+import fishy.mcp.domain.model.{Content, RequestId, ToolContext}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 
 /** Integration test that builds a simple MCP server and exercises the full dispatch path. */
 object SimpleServerSpec extends ZIOSpecDefault:
@@ -42,7 +43,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
   }
 
   // Build the server layers
-  val serverLayer = MCPServer
+  val serverLayer = AppConfig.testDefaults >>> MCPServer
     .withName("test-server")
     .withVersion("1.0.0")
     .withTools(echoTool, addTool, greetTool)
@@ -75,7 +76,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
             )
           ).flatMap(_.toOption)
         yield
-          val json = response.get.toOption.get.result.toString
+          val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("test-server")) &&
           assert(json)(containsString("1.0.0")) &&
           assert(json)(containsString("tools"))
@@ -86,7 +87,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
             request(id = 2, method = "tools/list")
           ).flatMap(_.toOption)
         yield
-          val json = response.get.toOption.get.result.toString
+          val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("echo")) &&
           assert(json)(containsString("add")) &&
           assert(json)(containsString("greet"))
@@ -106,7 +107,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
             )
           ).flatMap(_.toOption)
         yield
-          val json = response.get.toOption.get.result.toString
+          val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("Echo: Hello World"))
       },
       test("tools/call executes add tool with two parameters") {
@@ -127,7 +128,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
             )
           ).flatMap(_.toOption)
         yield
-          val json = response.get.toOption.get.result.toString
+          val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("Result: 12"))
       },
       test("tools/call executes zero-parameter greet tool") {
@@ -145,7 +146,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
             )
           ).flatMap(_.toOption)
         yield
-          val json = response.get.toOption.get.result.toString
+          val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("Hello, MCP!"))
       },
       test("ping returns empty object") {
@@ -153,7 +154,7 @@ object SimpleServerSpec extends ZIOSpecDefault:
           response <- McpDispatcher.dispatch(
             request(id = 6, method = "ping")
           ).flatMap(_.toOption)
-        yield assertTrue(response.get.toOption.get.result == Json.Obj())
+        yield assertTrue(response.get.outcome.toOption.get == Json.Obj())
       }
     )
   ).provideShared(serverLayer)

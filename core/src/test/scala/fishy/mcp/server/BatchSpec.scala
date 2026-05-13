@@ -2,10 +2,10 @@ package fishy.mcp.server
 
 import fishy.mcp.adapters.inbound.http.{HttpSecurityPolicy, HttpTransport}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.application.ports.{SessionStore, ToolRegistry}
 import fishy.mcp.application.usecase.McpDispatcher
-import fishy.mcp.bootstrap.MCPServer
+import fishy.mcp.bootstrap.{AppConfig, MCPServer}
 import fishy.mcp.domain.model
 import fishy.mcp.domain.model.{Content, ToolContext}
 import fishy.mcp.dsl.Tool
@@ -34,7 +34,7 @@ object BatchSpec extends ZIOSpecDefault:
     .withTools(addTool)
     .buildLayers
 
-  val transportLayer = serverLayer >>> HttpTransport.layer
+  val transportLayer = AppConfig.testDefaults >>> serverLayer >>> HttpTransport.layer
 
   private def postMcp(body: String): ZIO[HttpTransport, Throwable, zio.http.Response] =
     for

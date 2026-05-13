@@ -114,6 +114,7 @@ object SseServer extends MCPApp:
     // The standard `serveHttp` wraps everything into HttpTransport[R] only;
     // here we expose NotificationSender too so a background fiber can broadcast.
     val layers = ZLayer.make[HttpTransport & NotificationSender](
+      fishy.mcp.bootstrap.AppConfig.testDefaults,
       server.buildLayers,
       HttpTransport.layer
     )

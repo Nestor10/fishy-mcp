@@ -1,7 +1,8 @@
 package fishy.mcp.server
 
 import fishy.mcp.adapters.protocol.jsonrpc.{Error as JsonRpcError, *}
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.adapters.protocol.mcp.ClientMessages
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.application.ports.MessageRouter
 import fishy.mcp.application.usecase.ClientRequester
 import fishy.mcp.domain.model.*
@@ -215,7 +216,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
           result <- fiber.join.either
         yield assertTrue(
           result.isLeft,
-          result.left.toOption.get.getMessage.contains("Not supported")
+          result.left.toOption.get.message.contains("Not supported")
         )
       },
       test("completeRequest returns false for unknown request ID") {
@@ -231,7 +232,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
           result <- requester.sendRequest("s1", "sampling/createMessage", Json.Obj()).either
         yield assertTrue(
           result.isLeft,
-          result.left.toOption.get.getMessage.contains("No active SSE connection")
+          result.left.toOption.get.message.contains("No active SSE connection")
         )
       },
       test("registerClientCapabilities stores and retrieves caps") {
@@ -272,7 +273,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
     suite("ToolContext extensions")(
       test("createMessage sends typed request and decodes result") {
         import ClientMessages.*
-        val callback: (String, Json) => Task[Json] = (method, params) =>
+        val callback: (String, Json) => IO[ClientRequesterError, Json] = (method, params) =>
           ZIO.succeed(
             Json.Obj(
               "role" -> Json.Str("assistant"),
@@ -294,7 +295,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
       },
       test("listRoots sends typed request and decodes result") {
         import ClientMessages.*
-        val callback: (String, Json) => Task[Json] = (method, _) =>
+        val callback: (String, Json) => IO[ClientRequesterError, Json] = (method, _) =>
           assertTrue(method == "roots/list") *>
             ZIO.succeed(Json.Obj(
               "roots" -> Json.Arr(
@@ -312,7 +313,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
       },
       test("elicit sends typed request and decodes result") {
         import ClientMessages.*
-        val callback: (String, Json) => Task[Json] = (_, _) =>
+        val callback: (String, Json) => IO[ClientRequesterError, Json] = (_, _) =>
           ZIO.succeed(Json.Obj(
             "action" -> Json.Str("accepted"),
             "content" -> Json.Obj("name" -> Json.Str("fishy-mcp"))
@@ -334,7 +335,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
           r3 <- ctx.elicit(ElicitationParams("hi")).either
         yield assertTrue(
           r1.isLeft,
-          r1.left.toOption.get.getMessage.contains("No client request callback"),
+          r1.left.toOption.get.getMessage.contains("No client request callback available"),
           r2.isLeft,
           r3.isLeft
         )
@@ -366,8 +367,8 @@ object ServerToClientSpec extends ZIOSpecDefault:
         yield
         // Initialize should succeed
         result match
-          case DispatchResult.Single(Right(_)) => assertTrue(true)
-          case other                           => assertTrue(false)
+          case DispatchResult.Single(p) if p.outcome.isRight => assertTrue(true)
+          case other                                          => assertTrue(false)
       }
     )
   )

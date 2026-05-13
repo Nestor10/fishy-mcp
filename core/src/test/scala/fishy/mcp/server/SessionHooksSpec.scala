@@ -4,7 +4,7 @@ import fishy.mcp.application.ports.*
 import fishy.mcp.application.usecase.*
 import fishy.mcp.bootstrap.TracingLayers
 import fishy.mcp.domain.model.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import fishy.mcp.adapters.storage.{InMemoryBackend, InMemorySubscriptionRegistry}
 import fishy.mcp.dsl.Tool as DslTool
 import zio.*
@@ -167,7 +167,7 @@ object SessionHooksSpec extends ZIOSpecDefault:
               "arguments" -> Json.Obj("message" -> Json.Str("test"))
             )
             _ <- executor.call(
-              fishy.mcp.adapters.protocol.jsonrpc.RequestId.NumberId(1),
+              fishy.mcp.domain.model.RequestId.NumberId(1),
               Some(params),
               Some(sessionId)
             )
@@ -208,7 +208,7 @@ object SessionHooksSpec extends ZIOSpecDefault:
               "arguments" -> Json.Obj("message" -> Json.Str("test"))
             )
             _ <- executor.call(
-              fishy.mcp.adapters.protocol.jsonrpc.RequestId.NumberId(1),
+              fishy.mcp.domain.model.RequestId.NumberId(1),
               Some(params),
               Some(sessionId)
             )
@@ -237,7 +237,7 @@ object SessionHooksSpec extends ZIOSpecDefault:
               "arguments" -> Json.Obj("message" -> Json.Str("test"))
             )
             result <- executor.call(
-              fishy.mcp.adapters.protocol.jsonrpc.RequestId.NumberId(1),
+              fishy.mcp.domain.model.RequestId.NumberId(1),
               Some(params),
               None
             )

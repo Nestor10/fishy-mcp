@@ -3,9 +3,9 @@ package fishy.mcp.server
 import fishy.mcp.application.usecase.McpDispatcher
 import fishy.mcp.domain.model.DispatchResult.*
 import fishy.mcp.dsl.*
-import fishy.mcp.domain.model.{Content, ToolContext}
+import fishy.mcp.domain.model.{Content, RequestId, ToolContext}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -69,7 +69,7 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
 
   // Build server with intersection type R = FileService & DbService
   val serverLayer =
-    (fileServiceLayer ++ dbServiceLayer) >>>
+    (fishy.mcp.bootstrap.AppConfig.testDefaults ++ fileServiceLayer ++ dbServiceLayer) >>>
       MCPServer
         .withName("intersection-test")
         .withVersion("1.0.0")
@@ -77,6 +77,9 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
         .withTools(dbTool)
         .withTools(pureTool)
         .buildLayers
+  // Note: ++ on layers takes the *intersection* of inputs; here Any & FileService & DbService
+  // unifies to FileService & DbService, and AppConfig.testDefaults is ULayer (Any input) so the
+  // composition still works.
 
   def request(id: Long, method: String, params: Option[Json] = None): Request =
     Request("2.0", method, params, Some(RequestId.NumberId(id)))
@@ -99,7 +102,7 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
         single <- result.toOption
       yield assertTrue(
         single.isDefined,
-        single.get.isRight
+        single.get.outcome.isRight
       )
     },
     test("tools/list returns tools from both service environments") {
@@ -126,7 +129,7 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
         )
         single <- result.toOption
       yield
-        val json = single.get.toOption.get.result.toString
+        val json = single.get.outcome.toOption.get.toString
         assertTrue(
           json.contains("read_file"),
           json.contains("query_db"),
@@ -164,7 +167,7 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
         )
         single <- result.toOption
       yield
-        val json = single.get.toOption.get.result.toString
+        val json = single.get.outcome.toOption.get.toString
         assertTrue(json.contains("content of /etc/hosts"))
     },
     test("tools/call dispatches to DbService tool") {
@@ -198,7 +201,7 @@ object IntersectionTypeSpec extends ZIOSpecDefault:
         )
         single <- result.toOption
       yield
-        val json = single.get.toOption.get.result.toString
+        val json = single.get.outcome.toOption.get.toString
         assertTrue(json.contains("result of SELECT 1"))
     }
   ).provideShared(serverLayer)

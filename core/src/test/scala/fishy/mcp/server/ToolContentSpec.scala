@@ -1,6 +1,6 @@
 package fishy.mcp.server
 
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.json.*
 import zio.json.ast.Json
 import zio.test.*

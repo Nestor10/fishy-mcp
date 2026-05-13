@@ -1,5 +1,6 @@
 package fishy.mcp.adapters.protocol.jsonrpc
 
+import fishy.mcp.domain.model.RequestId
 import zio.json.*
 import zio.json.ast.Json
 
@@ -9,23 +10,19 @@ import zio.json.ast.Json
   *   https://www.jsonrpc.org/specification
   */
 
-/** Request ID: string, number, or null per JSON-RPC spec. */
-enum RequestId:
-  case StringId(value: String)
-  case NumberId(value: Long)
-  case Null
-
-object RequestId:
+object RequestIdCodec:
   given JsonDecoder[RequestId] = JsonDecoder[Json].mapOrFail:
-    case Json.Str(s) => Right(StringId(s))
-    case Json.Num(n) => Right(NumberId(n.longValue))
-    case Json.Null   => Right(Null)
+    case Json.Str(s) => Right(RequestId.StringId(s))
+    case Json.Num(n) => Right(RequestId.NumberId(n.longValue))
+    case Json.Null   => Right(RequestId.Null)
     case other       => Left(s"Invalid request id: $other")
 
   given JsonEncoder[RequestId] = JsonEncoder[Json].contramap:
-    case StringId(s) => Json.Str(s)
-    case NumberId(n) => Json.Num(n)
-    case Null        => Json.Null
+    case RequestId.StringId(s) => Json.Str(s)
+    case RequestId.NumberId(n) => Json.Num(n)
+    case RequestId.Null        => Json.Null
+
+import RequestIdCodec.given
 
 final case class Request(
     jsonrpc: String,

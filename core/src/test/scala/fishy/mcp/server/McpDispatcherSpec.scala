@@ -5,7 +5,7 @@ import fishy.mcp.application.usecase.McpDispatcher
 import fishy.mcp.domain.model.*
 import fishy.mcp.dsl.Tool
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -49,8 +49,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isRight,
-            inner.toOption.get.result.toString.contains("protocolVersion")
+            inner.outcome.isRight,
+            inner.outcome.toOption.get.toString.contains("protocolVersion")
           )
       },
       test("advertises tools capability when tools are registered") {
@@ -58,7 +58,7 @@ object McpDispatcherSpec extends ZIOSpecDefault:
           (dispatcher, _) <- makeDispatcher(List(echoTool))
           result <- dispatcher.dispatch(request("initialize"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(
             json.contains("\"tools\""),
             !json.contains("\"resources\""),
@@ -71,7 +71,7 @@ object McpDispatcherSpec extends ZIOSpecDefault:
           (dispatcher, _) <- makeDispatcher(capabilities = ServerCapabilities())
           result <- dispatcher.dispatch(request("initialize"), None).flatMap(_.toOption)
         yield
-          val json = result.get.toOption.get.result.toString
+          val json = result.get.outcome.toOption.get.toString
           assertTrue(!json.contains("\"tools\""))
       }
     ),
@@ -83,8 +83,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isRight,
-            inner.toOption.get.result == Json.Obj()
+            inner.outcome.isRight,
+            inner.outcome.toOption.get == Json.Obj()
           )
       }
     ),
@@ -96,8 +96,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isRight,
-            inner.toOption.get.result.toString.contains("echo")
+            inner.outcome.isRight,
+            inner.outcome.toOption.get.toString.contains("echo")
           )
       }
     ),
@@ -114,15 +114,15 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isRight,
-            inner.toOption.get.result.toString.contains("hello world")
+            inner.outcome.isRight,
+            inner.outcome.toOption.get.toString.contains("hello world")
           )
       },
       test("returns error for missing params") {
         for
           (dispatcher, _) <- makeDispatcher(List(echoTool))
           result <- dispatcher.dispatch(request("tools/call", None), None).flatMap(_.toOption)
-        yield assertTrue(result.get.isLeft)
+        yield assertTrue(result.get.outcome.isLeft)
       }
     ),
     suite("notifications")(
@@ -150,8 +150,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isLeft,
-            inner.left.toOption.get.error.code == ErrorCode.InvalidRequest
+            inner.outcome.isLeft,
+            inner.outcome.left.toOption.get.code == ErrorCode.InvalidRequest
           )
       },
       test("allows tools/list after initialization") {
@@ -162,7 +162,7 @@ object McpDispatcherSpec extends ZIOSpecDefault:
             dispatcher.dispatch(request("tools/list"), Some("session-1")).flatMap(_.toOption)
         yield
           val inner = result.get
-          assertTrue(inner.isRight)
+          assertTrue(inner.outcome.isRight)
       },
       test("skips init gate when sessionId is None") {
         for
@@ -170,7 +170,7 @@ object McpDispatcherSpec extends ZIOSpecDefault:
           result <- dispatcher.dispatch(request("tools/list"), None).flatMap(_.toOption)
         yield
           val inner = result.get
-          assertTrue(inner.isRight)
+          assertTrue(inner.outcome.isRight)
       },
       test("allows ping before initialization") {
         for
@@ -178,7 +178,7 @@ object McpDispatcherSpec extends ZIOSpecDefault:
           result <- dispatcher.dispatch(request("ping"), Some("session-1")).flatMap(_.toOption)
         yield
           val inner = result.get
-          assertTrue(inner.isRight)
+          assertTrue(inner.outcome.isRight)
       },
       test("notifications/initialized marks session as initialized") {
         for
@@ -193,8 +193,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
           afterResult <-
             dispatcher.dispatch(request("tools/list"), Some("session-1")).flatMap(_.toOption)
         yield assertTrue(
-          beforeResult.get.isLeft,
-          afterResult.get.isRight
+          beforeResult.get.outcome.isLeft,
+          afterResult.get.outcome.isRight
         )
       }
     ),
@@ -206,8 +206,8 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val inner = result.get
           assertTrue(
-            inner.isLeft,
-            inner.left.toOption.get.error.code == ErrorCode.MethodNotFound
+            inner.outcome.isLeft,
+            inner.outcome.left.toOption.get.code == ErrorCode.MethodNotFound
           )
       }
     )

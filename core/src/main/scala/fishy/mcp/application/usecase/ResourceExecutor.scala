@@ -2,8 +2,7 @@ package fishy.mcp.application.usecase
 
 import fishy.mcp.application.ports.{ResourceRegistry, SubscriptionRegistry}
 import fishy.mcp.domain.model.*
-import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -11,30 +10,19 @@ import zio.telemetry.opentelemetry.tracing.Tracing
 
 /** Handles resource list and read operations.
   *
-  * Owns the translation between JSON-RPC params and ResourceRegistry calls, including error mapping
-  * to JSON-RPC error responses.
+  * Owns the translation between JSON-RPC params and ResourceRegistry calls,
+  * mapping registry errors to typed [[McpError]]s. Returns domain
+  * [[ResponsePayload]] -- the transport adapter handles wire serialization.
   *
   * Pattern: Trait + Companion + Live in one file.
   */
 trait ResourceExecutor:
 
-  def list(id: RequestId): UIO[Either[ErrorResponse, Response]]
-
-  def read(id: RequestId, params: Option[Json]): UIO[Either[ErrorResponse, Response]]
-
-  def templatesList(id: RequestId): UIO[Either[ErrorResponse, Response]]
-
-  def subscribe(
-      id: RequestId,
-      params: Option[Json],
-      sessionId: Option[String]
-  ): UIO[Either[ErrorResponse, Response]]
-
-  def unsubscribe(
-      id: RequestId,
-      params: Option[Json],
-      sessionId: Option[String]
-  ): UIO[Either[ErrorResponse, Response]]
+  def list(id: RequestId): UIO[ResponsePayload]
+  def read(id: RequestId, params: Option[Json]): UIO[ResponsePayload]
+  def templatesList(id: RequestId): UIO[ResponsePayload]
+  def subscribe(id: RequestId, params: Option[Json], sessionId: Option[String]): UIO[ResponsePayload]
+  def unsubscribe(id: RequestId, params: Option[Json], sessionId: Option[String]): UIO[ResponsePayload]
 
 object ResourceExecutor:
 
@@ -74,6 +62,11 @@ object ResourceExecutor:
   // Live implementation
   // ---------------------------------------------------------------------------
 
+  /** MCP-specific extension code for "resource not found" -- not in the
+    * standard JSON-RPC range. Spec uses -32002.
+    */
+  private val ResourceNotFoundCode = -32002
+
   private final case class Live(
       resourceRegistry: ResourceRegistry,
       subscriptionRegistry: SubscriptionRegistry,
@@ -82,7 +75,7 @@ object ResourceExecutor:
 
     import tracing.aspects.*
 
-    def list(id: RequestId): UIO[Either[ErrorResponse, Response]] =
+    def list(id: RequestId): UIO[ResponsePayload] =
       for
         resources <- resourceRegistry.list
         definitions = resources.map(r =>
@@ -93,17 +86,16 @@ object ResourceExecutor:
             mimeType = r.mimeType
           )
         )
-        result = ResourcesListResult(definitions)
-      yield Right(Response.success(id, result.toJsonAST.toOption.get))
+      yield encodeResult(id, ResourcesListResult(definitions))
 
-    def read(id: RequestId, params: Option[Json]): UIO[Either[ErrorResponse, Response]] =
+    def read(id: RequestId, params: Option[Json]): UIO[ResponsePayload] =
       params match
         case None =>
-          ZIO.succeed(Left(ErrorResponse.invalidParams(id, "Missing params")))
+          ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams("Missing params")))
         case Some(json) =>
           json.as[ResourceReadParams] match
             case Left(err) =>
-              ZIO.succeed(Left(ErrorResponse.invalidParams(id, err)))
+              ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams(err)))
             case Right(readParams) =>
               (tracing.setAttribute("mcp.resource.uri", readParams.uri) *>
                 resourceRegistry
@@ -115,53 +107,70 @@ object ResourceExecutor:
                       case ResourceContent.Blob(uri, mime, blob) =>
                         ResourceContentItem(uri, mime, blob = Some(blob))
                     }
-                    Right(Response.success(id, ResourceReadResult(items).toJsonAST.toOption.get))
+                    encodeResult(id, ResourceReadResult(items))
                   }
                   .catchAll {
                     case ResourceError.NotFound(uri) =>
-                      ZIO.succeed(Left(ErrorResponse(id, -32002, s"Resource not found: $uri")))
+                      ZIO.succeed(ResponsePayload.failure(
+                        id,
+                        McpError.Custom(ResourceNotFoundCode, s"Resource not found: $uri")
+                      ))
                     case err =>
-                      ZIO.succeed(Left(ErrorResponse.internalError(id, err.message)))
+                      ZIO.succeed(ResponsePayload.failure(id, McpError.InternalError(err.message)))
                   }) @@ span("mcp.resource.read")
 
-    def templatesList(id: RequestId): UIO[Either[ErrorResponse, Response]] =
-      val result = ResourceTemplatesListResult(Nil)
-      ZIO.succeed(Right(Response.success(id, result.toJsonAST.toOption.get)))
+    def templatesList(id: RequestId): UIO[ResponsePayload] =
+      ZIO.succeed(encodeResult(id, ResourceTemplatesListResult(Nil)))
 
     def subscribe(
         id: RequestId,
         params: Option[Json],
         sessionId: Option[String]
-    ): UIO[Either[ErrorResponse, Response]] =
+    ): UIO[ResponsePayload] =
       (params, sessionId) match
         case (None, _) =>
-          ZIO.succeed(Left(ErrorResponse.invalidParams(id, "Missing params")))
+          ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams("Missing params")))
         case (_, None) =>
-          ZIO.succeed(Left(ErrorResponse.invalidParams(id, "Subscriptions require a session")))
+          ZIO.succeed(ResponsePayload.failure(
+            id,
+            McpError.InvalidParams("Subscriptions require a session")
+          ))
         case (Some(json), Some(sid)) =>
           json.as[ResourceReadParams] match
             case Left(err) =>
-              ZIO.succeed(Left(ErrorResponse.invalidParams(id, err)))
+              ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams(err)))
             case Right(p) =>
-              subscriptionRegistry.subscribe(sid, p.uri).as(
-                Right(Response.success(id, Json.Obj()))
-              )
+              subscriptionRegistry
+                .subscribe(sid, p.uri)
+                .as(ResponsePayload.success(id, Json.Obj()))
 
     def unsubscribe(
         id: RequestId,
         params: Option[Json],
         sessionId: Option[String]
-    ): UIO[Either[ErrorResponse, Response]] =
+    ): UIO[ResponsePayload] =
       (params, sessionId) match
         case (None, _) =>
-          ZIO.succeed(Left(ErrorResponse.invalidParams(id, "Missing params")))
+          ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams("Missing params")))
         case (_, None) =>
-          ZIO.succeed(Left(ErrorResponse.invalidParams(id, "Subscriptions require a session")))
+          ZIO.succeed(ResponsePayload.failure(
+            id,
+            McpError.InvalidParams("Subscriptions require a session")
+          ))
         case (Some(json), Some(sid)) =>
           json.as[ResourceReadParams] match
             case Left(err) =>
-              ZIO.succeed(Left(ErrorResponse.invalidParams(id, err)))
+              ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams(err)))
             case Right(p) =>
-              subscriptionRegistry.unsubscribe(sid, p.uri).as(
-                Right(Response.success(id, Json.Obj()))
-              )
+              subscriptionRegistry
+                .unsubscribe(sid, p.uri)
+                .as(ResponsePayload.success(id, Json.Obj()))
+
+    private def encodeResult[A: JsonEncoder](id: RequestId, value: A): ResponsePayload =
+      value.toJsonAST match
+        case Right(json) => ResponsePayload.success(id, json)
+        case Left(err) =>
+          ResponsePayload.failure(
+            id,
+            McpError.InternalError(s"failed to encode result: $err")
+          )

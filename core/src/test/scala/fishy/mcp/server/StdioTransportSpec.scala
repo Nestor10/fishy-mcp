@@ -1,10 +1,11 @@
 package fishy.mcp.server
 
 import fishy.mcp.adapters.inbound.stdio.StdioTransport
+import fishy.mcp.bootstrap.AppConfig
 import fishy.mcp.dsl.*
-import fishy.mcp.domain.model.{Content, ToolContext}
+import fishy.mcp.domain.model.{Content, RequestId, ToolContext}
 import fishy.mcp.adapters.protocol.jsonrpc.*
-import fishy.mcp.adapters.protocol.mcp.*
+import fishy.mcp.domain.model.mcp.*
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -60,7 +61,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -84,7 +85,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -114,7 +115,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -141,7 +142,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -161,7 +162,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -189,7 +190,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)
@@ -221,7 +222,7 @@ object StdioTransportSpec extends ZIOSpecDefault:
         .withTools(echoTool)
         .buildLayers
 
-      val testLayer = serverLayer >>> StdioTransport.withStreams(input, output)
+      val testLayer = AppConfig.testDefaults >>> serverLayer >>> StdioTransport.withStreams(input, output)
 
       for
         _ <- StdioTransport.run.provide(testLayer)

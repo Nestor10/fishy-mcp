@@ -1,6 +1,6 @@
 package fishy.mcp.server
 
-import fishy.mcp.adapters.storage.{ConfigDrivenLayers, StatelessBackend}
+import fishy.mcp.adapters.storage.{BackendConfig, ConfigDrivenLayers, StatelessBackend}
 import fishy.mcp.application.ports.{EventReplay, MessageRouter, SessionStore}
 import zio.*
 import zio.test.*
@@ -100,12 +100,12 @@ object StatelessBackendSpec extends ZIOSpecDefault:
     }
   ).provide(StatelessBackend.layer)
 
-  private val configDrivenSuite = suite("ConfigDrivenLayers conflict detection")(
-    test("fails when both MCP_STATELESS and REDIS_URL are set") {
+  private val configDrivenSuite = suite("BackendConfig conflict detection")(
+    test("fails when both MCP_STATELESS=true and REDIS_URL are set") {
       for
-        _ <- TestSystem.putEnv("MCP_STATELESS", "true")
-        _ <- TestSystem.putEnv("REDIS_URL", "redis://localhost:6379")
-        result <- ZIO.unit.provideLayer(ConfigDrivenLayers.live).exit
-      yield assert(result)(dies(hasMessage(containsString("mutually exclusive"))))
+        _      <- TestSystem.putEnv("MCP_STATELESS", "true")
+        _      <- TestSystem.putEnv("REDIS_URL", "redis://localhost:6379")
+        result <- ZIO.config(BackendConfig.config).exit
+      yield assert(result)(fails(isSubtype[Config.Error.InvalidData](anything)))
     }
   )
