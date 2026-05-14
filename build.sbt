@@ -1,5 +1,3 @@
-import sbtrelease.ReleasePlugin.autoImport.*
-import sbtrelease.ReleaseStateTransformations.*
 import _root_.scalafix.sbt.ScalafixPlugin.autoImport._
 
 val scala3Version = "3.8.2"
@@ -26,21 +24,7 @@ inThisBuild(
         url("https://github.com/Nestor10")
       )
     ),
-    sonatypeCredentialHost := "central.sonatype.com",
-    releaseCrossBuild := false,
-    releaseProcess := Seq(
-      checkSnapshotDependencies,
-      inquireVersions,
-      runClean,
-      releaseStepCommand("lint"),
-      runTest,
-      setReleaseVersion,
-      commitReleaseVersion,
-      tagRelease,
-      setNextVersion,
-      commitNextVersion,
-      pushChanges
-    )
+    sonatypeCredentialHost := "central.sonatype.com"
   )
 )
 
