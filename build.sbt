@@ -23,8 +23,7 @@ inThisBuild(
         "ericsmith.lpi@gmail.com",
         url("https://github.com/Nestor10")
       )
-    ),
-    sonatypeCredentialHost := "central.sonatype.com"
+    )
   )
 )
 
