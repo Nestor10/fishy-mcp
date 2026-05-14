@@ -1,7 +1,6 @@
 addSbtPlugin("com.github.sbt" % "sbt-native-packager" % "1.11.0")
 addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "2.3.0")
-addSbtPlugin("com.github.sbt" % "sbt-ci-release" % "1.9.2")
-addSbtPlugin("com.github.sbt" % "sbt-release" % "1.4.0")
+addSbtPlugin("com.github.sbt" % "sbt-ci-release" % "1.11.2")
 addSbtPlugin("org.scalameta" % "sbt-scalafmt" % "2.5.6")
 addSbtPlugin("ch.epfl.scala" % "sbt-scalafix" % "0.14.6")
 addSbtPlugin("io.spray" % "sbt-revolver" % "0.10.0")

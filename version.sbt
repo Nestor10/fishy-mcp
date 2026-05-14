@@ -1,1 +1,1 @@
-ThisBuild / version := "0.0.2-SNAPSHOT"
+// Version is derived from Git tags by sbt-ci-release / sbt-dynver.
