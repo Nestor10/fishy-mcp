@@ -10,7 +10,9 @@ import zio.*
   *   - `AUTH_MODE=jwt` -- [[Jwt]]. Validate Bearer tokens via JWKS. Requires
   *     `JWKS_URI`, `JWT_ISSUER`, `JWT_AUDIENCE`. Optional
   *     `JWT_GROUPS_CLAIM` (default `groups`), `JWT_SCOPES_CLAIM`
-  *     (default `scp`).
+  *     (default `scp`), `JWT_RESOURCE_METADATA_URL` (advertised in the
+  *     `WWW-Authenticate` 401 challenge — required by the MCP 2025-06-18
+  *     authorization profile for client OAuth bootstrap), `JWT_REALM`.
   *
   * Unknown `AUTH_MODE` values or `jwt` with missing required vars fail at
   * startup.
@@ -23,7 +25,9 @@ enum AuthConfig:
       issuer: String,
       audience: String,
       groupsClaim: String,
-      scopesClaim: String
+      scopesClaim: String,
+      resourceMetadataUrl: Option[String],
+      realm: Option[String]
   )
 
 object AuthConfig:
@@ -34,9 +38,11 @@ object AuthConfig:
     Config.string("JWT_ISSUER").optional zip
     Config.string("JWT_AUDIENCE").optional zip
     Config.string("JWT_GROUPS_CLAIM").withDefault("groups") zip
-    Config.string("JWT_SCOPES_CLAIM").withDefault("scp")
+    Config.string("JWT_SCOPES_CLAIM").withDefault("scp") zip
+    Config.string("JWT_RESOURCE_METADATA_URL").optional zip
+    Config.string("JWT_REALM").optional
   ).mapOrFail {
-    case (mode, jwks, iss, aud, groups, scopes) =>
+    case (mode, jwks, iss, aud, groups, scopes, resourceMetadata, realm) =>
       mode.toLowerCase match
         case "" | "allow_all" =>
           Right(AuthConfig.AllowAll)
@@ -45,7 +51,7 @@ object AuthConfig:
         case "jwt" =>
           (jwks, iss, aud) match
             case (Some(j), Some(i), Some(a)) =>
-              Right(AuthConfig.Jwt(j, i, a, groups, scopes))
+              Right(AuthConfig.Jwt(j, i, a, groups, scopes, resourceMetadata, realm))
             case _ =>
               val missing = List(
                 Option.when(jwks.isEmpty)("JWKS_URI"),
