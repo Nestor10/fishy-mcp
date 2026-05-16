@@ -20,6 +20,11 @@ import scala.jdk.CollectionConverters.*
   * signature, expiry, issuer, and audience. On success, sets `AuthFiberRef` with an `AuthContext`
   * extracted from standard OIDC claims.
   *
+  * On a 401, emits a `WWW-Authenticate: Bearer ...` header per RFC 6750 §3 and RFC 9728 §5.1.
+  * When `resourceMetadataUrl` is set, the `resource_metadata` parameter is included so that
+  * MCP clients (per the 2025-06-18 authorization profile) can discover the protected-resource
+  * metadata document and start the OAuth flow.
+  *
   * Uses nimbus-jose-jwt under the hood. JWKS keys are fetched lazily on first request and cached
   * automatically (5 min default TTL).
   */
@@ -31,8 +36,14 @@ object JwtSecurityPolicy:
       audience: String,
       algorithms: Set[String] = Set("RS256"),
       scopesClaim: String = "scp",
-      groupsClaim: String = "groups"
+      groupsClaim: String = "groups",
+      resourceMetadataUrl: Option[String] = None,
+      realm: Option[String] = None
   )
+
+  private enum AuthFailure(val description: String):
+    case MissingBearer extends AuthFailure("Missing or invalid Authorization: Bearer header")
+    case InvalidToken(detail: String) extends AuthFailure(s"JWT validation failed: $detail")
 
   def layer(config: Config): TaskLayer[HttpSecurityPolicy] =
     ZLayer.fromZIO(buildPolicy(config))
@@ -70,7 +81,7 @@ object JwtSecurityPolicy:
         HandlerAspect.interceptIncomingHandler(
           Handler.fromFunctionZIO[Request] { request =>
             validate(request, processor, config).foldZIO(
-              error => ZIO.fail(Response.text(error).status(Status.Unauthorized)),
+              failure => ZIO.fail(unauthorizedResponse(failure, config)),
               auth => AuthFiberRef.currentAuth.set(Some(auth)).as((request, ()))
             )
           }
@@ -80,15 +91,46 @@ object JwtSecurityPolicy:
       request: Request,
       processor: DefaultJWTProcessor[SecurityContext],
       config: Config
-  ): IO[String, AuthContext] =
+  ): IO[AuthFailure, AuthContext] =
     request.headers.get("Authorization").filter(_.startsWith("Bearer ")) match
       case None =>
-        ZIO.fail("Missing or invalid Authorization: Bearer header")
+        ZIO.fail(AuthFailure.MissingBearer)
       case Some(header) =>
         val token = header.substring(7)
         ZIO.attemptBlocking(processor.process(token, null))
-          .mapError(e => s"JWT validation failed: ${e.getMessage}")
+          .mapError(e => AuthFailure.InvalidToken(e.getMessage))
           .map(claims => extractClaims(claims, config))
+
+  /** Builds the 401 response with a spec-conformant WWW-Authenticate challenge.
+    *
+    * RFC 6750 §3: a missing-credentials response SHOULD NOT carry an `error` parameter; an
+    * invalid-token response SHOULD carry `error="invalid_token"` and `error_description`.
+    * RFC 9728 §5.1 / MCP auth profile: `resource_metadata` points clients at the protected-
+    * resource metadata document so they can discover the authorization server.
+    */
+  private def unauthorizedResponse(failure: AuthFailure, config: Config): Response =
+    val params = scala.collection.mutable.ListBuffer.empty[(String, String)]
+    config.realm.foreach(r => params += "realm" -> r)
+    config.resourceMetadataUrl.foreach(u => params += "resource_metadata" -> u)
+    failure match
+      case AuthFailure.MissingBearer => ()
+      case AuthFailure.InvalidToken(detail) =>
+        params += "error" -> "invalid_token"
+        params += "error_description" -> sanitizeQuotedValue(detail)
+    val challenge = params
+      .map { case (k, v) => s"""$k="$v"""" }
+      .mkString("Bearer ", ", ", "")
+      .trim
+    val challengeHeader = if challenge == "Bearer" then "Bearer" else challenge
+    Response
+      .text(failure.description)
+      .status(Status.Unauthorized)
+      .addHeader("WWW-Authenticate", challengeHeader)
+
+  // Quoted-string values in WWW-Authenticate must not contain unescaped quotes or control chars.
+  // Cheap sanitiser: replace problematic chars with spaces — these strings are diagnostic only.
+  private def sanitizeQuotedValue(s: String): String =
+    s.map(c => if c == '"' || c == '\\' || c.isControl then ' ' else c)
 
   private def extractClaims(claims: JWTClaimsSet, config: Config): AuthContext =
     val sub = claims.getSubject

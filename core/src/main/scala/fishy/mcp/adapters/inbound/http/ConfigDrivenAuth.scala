@@ -20,6 +20,8 @@ object ConfigDrivenAuth:
             issuer = jwt.issuer,
             audience = jwt.audience,
             groupsClaim = jwt.groupsClaim,
-            scopesClaim = jwt.scopesClaim
+            scopesClaim = jwt.scopesClaim,
+            resourceMetadataUrl = jwt.resourceMetadataUrl,
+            realm = jwt.realm
           )).orDie
     }

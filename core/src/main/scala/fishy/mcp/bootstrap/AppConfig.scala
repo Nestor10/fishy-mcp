@@ -116,7 +116,7 @@ object AppConfig:
           )
       case AuthConfig.Trusted =>
         ZIO.logInfo("Selected auth: Trusted (upstream proxy headers)")
-      case AuthConfig.Jwt(_, iss, aud, _, _) =>
+      case AuthConfig.Jwt(_, iss, aud, _, _, _, _) =>
         ZIO.logInfo(s"Selected auth: JWT (issuer=$iss, audience=$aud)")
 
     val profileLog =

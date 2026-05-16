@@ -139,7 +139,7 @@ object AppConfigAuditSpec extends ZIOSpecDefault:
         .audit(cfg(
           DeploymentProfile.Production,
           backend = BackendConfig.Redis("redis://prod:6379"),
-          auth = AuthConfig.Jwt("https://idp/jwks", "https://idp", "mcp", "groups", "scp")
+          auth = AuthConfig.Jwt("https://idp/jwks", "https://idp", "mcp", "groups", "scp", None, None)
         ))
         .as(assertCompletes)
     },
