@@ -34,9 +34,12 @@ object BatchSpec extends ZIOSpecDefault:
     .withTools(addTool)
     .buildLayers
 
-  val transportLayer = AppConfig.testDefaults >>> serverLayer >>> HttpTransport.layer
+  // `>+>` between serverLayer and HttpTransport.layer preserves Tracing so the
+  // test fixture can invoke `transport.routes.runZIO(...)` — the routes now
+  // require Tracing for the observability middleware.
+  val transportLayer = AppConfig.testDefaults >>> serverLayer >+> HttpTransport.layer
 
-  private def postMcp(body: String): ZIO[HttpTransport, Throwable, zio.http.Response] =
+  private def postMcp(body: String): ZIO[HttpTransport & zio.telemetry.opentelemetry.tracing.Tracing, Throwable, zio.http.Response] =
     for
       transport <- ZIO.service[HttpTransport]
       response <- ZIO.scoped {

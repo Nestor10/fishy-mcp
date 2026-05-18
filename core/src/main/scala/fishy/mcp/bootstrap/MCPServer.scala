@@ -264,7 +264,10 @@ final case class MCPServer[R] private (
     AppConfig.load.flatMap { cfg =>
       val configs = ZLayer.succeed(cfg.backend) ++ ZLayer.succeed(cfg.auth) ++
         ZLayer.succeed(cfg.tracing) ++ ZLayer.succeed(cfg.deployment)
-      val layers = (configs >+> buildLayers) >>> HttpTransport.layer
+      // `>+>` preserves Tracing/ContextStorage from buildLayers alongside the
+      // HttpTransport service, so HttpTransport.serve can wrap routes in OTel
+      // spans at request time.
+      val layers = (configs >+> buildLayers) >+> HttpTransport.layer
       ZIO.scoped {
         LoggingLayers.stdoutJson(cfg.log).build *>
           (ZIO.logInfo(s"Starting $name v$version on HTTP port ${cfg.server.port}") *>
