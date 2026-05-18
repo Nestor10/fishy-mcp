@@ -80,7 +80,10 @@ object HttpObservability:
           level = status =>
             if status.code >= 500 then LogLevel.Warning
             else LogLevel.Info,
-          loggedRequestHeaders = Set(Header.UserAgent, Header.Authorization)
+          // DO NOT add Authorization here — it contains the bearer token verbatim
+          // and the access log goes to disk / Loki / wherever logs end up. UA is
+          // diagnostic enough.
+          loggedRequestHeaders = Set(Header.UserAgent)
         )
 
   /** Adapter from zio-http `Headers` to OTel `IncomingContextCarrier` for
