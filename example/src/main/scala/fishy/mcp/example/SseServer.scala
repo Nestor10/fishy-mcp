@@ -113,7 +113,13 @@ object SseServer extends MCPApp:
     // Wire layers manually so we can access NotificationSender alongside HttpTransport.
     // The standard `serveHttp` wraps everything into HttpTransport[R] only;
     // here we expose NotificationSender too so a background fiber can broadcast.
-    val layers = ZLayer.make[HttpTransport & NotificationSender](
+    // Tracing is needed at runtime by HttpTransport.serve (the observability
+    // middleware wraps routes in OTel spans). buildLayers provides it via
+    // TracingLayers.live; expose it in the output type so .provideLayer
+    // satisfies HttpTransport.serve's environment requirement.
+    val layers = ZLayer.make[
+      HttpTransport & NotificationSender & zio.telemetry.opentelemetry.tracing.Tracing
+    ](
       fishy.mcp.bootstrap.AppConfig.testDefaults,
       server.buildLayers,
       HttpTransport.layer

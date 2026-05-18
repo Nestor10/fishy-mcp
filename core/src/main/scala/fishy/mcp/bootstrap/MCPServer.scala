@@ -264,16 +264,21 @@ final case class MCPServer[R] private (
     AppConfig.load.flatMap { cfg =>
       val configs = ZLayer.succeed(cfg.backend) ++ ZLayer.succeed(cfg.auth) ++
         ZLayer.succeed(cfg.tracing) ++ ZLayer.succeed(cfg.deployment)
-      val layers = (configs >+> buildLayers) >>> HttpTransport.layer
+      // `>+>` preserves Tracing/ContextStorage from buildLayers alongside the
+      // HttpTransport service, so HttpTransport.serve can wrap routes in OTel
+      // spans at request time.
+      val layers = (configs >+> buildLayers) >+> HttpTransport.layer
+      // Logger setup is handled by MCPApp.bootstrap (or the user's own
+      // ZIOAppDefault.bootstrap). Registering again here doubled every log
+      // line because both registrations stayed active.
       ZIO.scoped {
-        LoggingLayers.stdoutJson(cfg.log).build *>
-          (ZIO.logInfo(s"Starting $name v$version on HTTP port ${cfg.server.port}") *>
-            ZIO.logInfo(s"Tools: ${tools.map(_.name).mkString(", ")}") *>
-            HttpTransport.serve(cfg.server.port).provideSomeLayer[R](layers))
-            .catchAllDefect { throwable =>
-              ZIO.logErrorCause("FATAL: Unexpected defect in HTTP server", Cause.die(throwable)) *>
-                ZIO.die(throwable)
-            }
+        (ZIO.logInfo(s"Starting $name v$version on HTTP port ${cfg.server.port}") *>
+          ZIO.logInfo(s"Tools: ${tools.map(_.name).mkString(", ")}") *>
+          HttpTransport.serve(cfg.server.port).provideSomeLayer[R](layers))
+          .catchAllDefect { throwable =>
+            ZIO.logErrorCause("FATAL: Unexpected defect in HTTP server", Cause.die(throwable)) *>
+              ZIO.die(throwable)
+          }
       }
     }
 

@@ -11,6 +11,7 @@ import fishy.mcp.application.ports.{
 import fishy.mcp.application.usecase.{ClientRequester, McpDispatcher}
 import zio.*
 import zio.http.*
+import zio.telemetry.opentelemetry.tracing.Tracing
 
 /** Streamable HTTP transport for MCP.
   *
@@ -19,11 +20,13 @@ import zio.http.*
   */
 trait HttpTransport:
 
-  /** HTTP routes for the MCP endpoint. */
-  def routes: Routes[Any, Response]
+  /** HTTP routes for the MCP endpoint. Wrapped in
+    * [[HttpObservability.middleware]] so every request emits an OTel span +
+    * access log line. */
+  def routes: Routes[Tracing, Response]
 
   /** Start the HTTP server on the given port. */
-  def serve(port: Int): ZIO[Any, Throwable, Nothing]
+  def serve(port: Int): ZIO[Tracing, Throwable, Nothing]
 
 object HttpTransport:
 
@@ -33,7 +36,7 @@ object HttpTransport:
   // Accessors
   // ---------------------------------------------------------------------------
 
-  def routes: URIO[HttpTransport, Routes[Any, Response]] =
+  def routes: URIO[HttpTransport, Routes[Tracing, Response]] =
     ZIO.serviceWith(_.routes)
 
   def serve(port: Int) =
@@ -121,7 +124,7 @@ object HttpTransport:
             ZIO.succeed(request)
       }
 
-    def routes: Routes[Any, Response] =
+    def routes: Routes[Tracing, Response] =
       val mcpRoutes = Routes(
         Method.POST / "mcp" -> handler { (request: Request) =>
           requestHandler.handle(request).catchAllCause { cause =>
@@ -147,7 +150,9 @@ object HttpTransport:
         }
       )
 
-      mcpRoutes ++ healthRoutes ++ extraRoutes.routes
+      // Observability wraps the *whole* tree so well-known/, OAuth, health,
+      // and MCP requests all get spans + access logs.
+      (mcpRoutes ++ healthRoutes ++ extraRoutes.routes) @@ HttpObservability.middleware
 
-    def serve(port: Int): ZIO[Any, Throwable, Nothing] =
-      Server.serve(routes).provide(Server.defaultWithPort(port))
+    def serve(port: Int): ZIO[Tracing, Throwable, Nothing] =
+      Server.serve(routes).provideSomeLayer[Tracing](Server.defaultWithPort(port))

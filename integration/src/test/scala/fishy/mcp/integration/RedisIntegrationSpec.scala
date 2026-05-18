@@ -84,8 +84,11 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
     prompts = Some(PromptsCapability(listChanged = Some(true)))
   )
 
-  val fullLayer: ZLayer[Any, Throwable, HttpTransport & SessionStore] =
-    ZLayer.make[HttpTransport & SessionStore](
+  // Tracing exposed in output type because the observability middleware wraps
+  // routes in OTel spans — `transport.routes.runZIO(...)` requires it at call
+  // time. TracingLayers.noop satisfies it for tests without a real exporter.
+  val fullLayer: ZLayer[Any, Throwable, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing] =
+    ZLayer.make[HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing](
       redisContainerLayer,
       ZLayer.succeed(capabilities),
       SessionHooks.noOp,
@@ -114,7 +117,7 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
   private def postMcp(
       body: String,
       sessionId: Option[String] = None
-  ): ZIO[HttpTransport, Throwable, Response] =
+  ): ZIO[HttpTransport & zio.telemetry.opentelemetry.tracing.Tracing, Throwable, Response] =
     for
       transport <- ZIO.service[HttpTransport]
       response <- ZIO.scoped {
@@ -327,8 +330,8 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
         // Build a layer that gives us TWO independent HttpTransport apps
         // sharing a single Redis instance. This simulates two MCP server
         // processes in a horizontally-scaled deployment.
-        val appLayer: ZLayer[RedisConfig, Throwable, HttpTransport & SessionStore] =
-          ZLayer.makeSome[RedisConfig, HttpTransport & SessionStore](
+        val appLayer: ZLayer[RedisConfig, Throwable, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing] =
+          ZLayer.makeSome[RedisConfig, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing](
             ZLayer.succeed(capabilities),
             SessionHooks.noOp,
             InMemorySubscriptionRegistry.layer,
@@ -355,7 +358,7 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
             transport: HttpTransport,
             body: String,
             sessionId: Option[String] = None
-        ): ZIO[Any, Throwable, Response] =
+        ): ZIO[zio.telemetry.opentelemetry.tracing.Tracing, Throwable, Response] =
           ZIO.scoped {
             val base = Request
               .post(URL.root / "mcp", Body.fromString(body))
@@ -436,7 +439,7 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
             assertTrue(echoBodyB.contains("hello from server B!"))
         }
       }
-    ).provideShared(redisContainerLayer) @@
+    ).provideShared(redisContainerLayer ++ TracingLayers.noop) @@
       TestAspect.sequential @@
       TestAspect.withLiveClock @@
       TestAspect.timeout(120.seconds)
