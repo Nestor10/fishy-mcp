@@ -79,10 +79,8 @@ object HttpObservability:
         routes @@ HandlerAspect.requestLogging(
           level = status =>
             if status.code >= 500 then LogLevel.Warning
-            else LogLevel.Info,
-          // DO NOT add Authorization here — it contains the bearer token verbatim
-          // and the access log goes to disk / Loki / wherever logs end up. UA is
-          // diagnostic enough.
+            else LogLevel.Debug,
+          // Authorization deliberately excluded — bearer tokens land on disk.
           loggedRequestHeaders = Set(Header.UserAgent)
         )
 
