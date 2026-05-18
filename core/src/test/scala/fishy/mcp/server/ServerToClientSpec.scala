@@ -169,9 +169,12 @@ object ServerToClientSpec extends ZIOSpecDefault:
             Json.Obj("maxTokens" -> Json.Num(100)),
             2.seconds
           ).fork
-          // Yield to let the forked fiber register and publish
-          _ <- ZIO.yieldNow *> ZIO.yieldNow
-          msgs <- published.get
+          // Wait deterministically until the forked fiber has actually published
+          // the JSON-RPC request (and therefore registered its pending Promise).
+          // Previous `ZIO.yieldNow *> ZIO.yieldNow` was a heuristic — under Java
+          // 21's scheduling the fork could lose the race, leaving completeRequest
+          // to target a Promise that didn't exist yet → RequestTimeout flake.
+          msgs <- published.get.repeatUntil(_.nonEmpty)
           // Complete the request so the fiber doesn't hang
           _ <- requester.completeRequest("srv-1", Right(Json.Obj("role" -> Json.Str("assistant"))))
           _ <- TestClock.adjust(3.seconds)
