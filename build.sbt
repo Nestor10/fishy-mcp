@@ -114,8 +114,6 @@ lazy val oauth = project
   .settings(commonSettings)
   .settings(
     name := "fishy-oauth",
-    // Flip to false to publish the standalone AS once it's validated downstream.
-    publish / skip := true,
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio" % zioVersion,
       "dev.zio" %% "zio-http" % zioHttpVersion,
@@ -138,7 +136,6 @@ lazy val mcpOauth = project
   .settings(commonSettings)
   .settings(
     name := "fishy-mcp-oauth",
-    publish / skip := true,
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-test" % zioVersion % Test,
       "dev.zio" %% "zio-test-sbt" % zioVersion % Test,

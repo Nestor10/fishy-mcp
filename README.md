@@ -43,8 +43,8 @@ implementation("io.github.nestor10:fishy-mcp_3:<version>")
 
 `import fishy.mcp.*` is the one import you need — it brings `MCPServer`, `Tool`,
 `Resource`, `Prompt`, `Content`, `ToolContext`, and the auth policies. The OAuth
-**authorization server** is a separate `fishy-mcp-oauth` module (dev-preview, not
-yet published — see [Authentication](#authentication)).
+**authorization server** is a separate `fishy-mcp-oauth` artifact (see
+[Authentication](#authentication)).
 
 ## Quick Start
 
@@ -191,7 +191,7 @@ and exposes the caller as `ctx.auth: Option[AuthContext]`. `withConfigDrivenAuth
 selects the policy from `AUTH_MODE` / `JWT_*` env vars; `withTrustedHeaders()`
 reads identity headers set by a trusted reverse proxy.
 
-### Issuing tokens (authorization server) — `fishy-mcp-oauth`, dev-preview
+### Issuing tokens (authorization server) — `fishy-mcp-oauth`
 
 If you want MCP clients to authenticate *through your server* with OAuth, fishy
 can run the OAuth 2.1 authorization-server flow — dynamic client registration,
@@ -230,9 +230,16 @@ own `OAuthStorage` (Postgres, etc.) for production — same shape as bringing yo
 own Redis. `.withOAuth(config)` is the all-stubs dev shortcut; `.withCustomOAuth`
 wires every port by hand.
 
-This module is **dev-preview and not yet published to Maven** — it lives in the
-repo as `fishy-mcp-oauth`. The standalone, MCP-agnostic authorization server is
-the `fishy-oauth` module.
+Add it with one dependency — it pulls in `fishy-mcp` and the standalone,
+MCP-agnostic `fishy-oauth` authorization server transitively:
+
+```scala
+libraryDependencies += "io.github.nestor10" %% "fishy-mcp-oauth" % "<version>"
+```
+
+The only port you bring is `OAuthStorage` (the in-memory store ships for dev);
+shipping a reference Postgres store as a `fishy-mcp-postgres-oauth` module is a
+planned follow-up.
 
 ## What's Implemented
 
@@ -253,10 +260,11 @@ backends (in-memory / Redis / stateless), bearer-token verification (see
 `_meta`, `auth`, and `client`/`progress`/`resources` capabilities) on every
 handler.
 
-Dev-preview (in-repo, not yet published): the OAuth 2.1 authorization server —
-see [Authentication](#authentication).
+OAuth 2.1 authorization server (the separate `fishy-mcp-oauth` artifact, with a
+generic OIDC upstream driver) — see [Authentication](#authentication).
 
-Not yet: pagination, completions, URI templates.
+Not yet: pagination, completions, URI templates, a reference Postgres
+`OAuthStorage`.
 
 ## Development Checks
 
