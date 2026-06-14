@@ -1,7 +1,7 @@
 package fishy.mcp.application.usecase
 
 import fishy.mcp.domain.model.mcp.ClientCapabilities
-import fishy.mcp.adapters.protocol.jsonrpc.{Error as JsonRpcError}
+import fishy.mcp.adapters.protocol.jsonrpc.{Error as JsonRpcError, Request}
 import fishy.mcp.application.ports.MessageRouter
 import fishy.mcp.domain.model.{ClientRequesterError, RequestId}
 import zio.*
@@ -159,10 +159,5 @@ object ClientRequester:
     private def nextId: UIO[String] =
       idCounter.modify(n => (s"srv-${n + 1}", n + 1))
 
-    private def buildRequest(id: String, method: String, params: Json): Json =
-      Json.Obj(
-        "jsonrpc" -> Json.Str("2.0"),
-        "id"      -> Json.Str(id),
-        "method"  -> Json.Str(method),
-        "params"  -> params
-      )
+    private def buildRequest(id: String, method: String, params: Json): Request =
+      Request("2.0", method, Some(params), Some(RequestId.StringId(id)))

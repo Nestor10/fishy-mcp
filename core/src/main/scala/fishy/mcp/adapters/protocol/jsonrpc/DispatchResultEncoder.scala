@@ -27,13 +27,7 @@ object DispatchResultEncoder:
   def encodeFrameJson(frame: StreamFrame): String =
     frame match
       case StreamFrame.Notification(method, params) =>
-        Json
-          .Obj(
-            "jsonrpc" -> Json.Str("2.0"),
-            "method"  -> Json.Str(method),
-            "params"  -> params
-          )
-          .toJson
+        Notification.make(method, Some(params)).toJson
       case StreamFrame.Final(payload) =>
         encodePayloadJson(payload)
 

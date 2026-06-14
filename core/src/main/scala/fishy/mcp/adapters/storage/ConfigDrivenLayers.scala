@@ -1,6 +1,6 @@
 package fishy.mcp.adapters.storage
 
-import fishy.mcp.application.ports.{EventReplay, MessageRouter, SessionStore}
+import fishy.mcp.application.ports.{EventReplay, MessageRouter, SessionStore, SubscriptionRegistry}
 import zio.*
 import zio.redis.{CodecSupplier, Redis, RedisConfig, RedisSubscription}
 
@@ -11,22 +11,29 @@ import zio.redis.{CodecSupplier, Redis, RedisConfig, RedisSubscription}
   */
 object ConfigDrivenLayers:
 
-  /** Builds a backend stack from a `BackendConfig` already in the environment. */
-  val live: URLayer[BackendConfig, SessionStore & MessageRouter & EventReplay] =
+  /** Builds the full session-state stack — including the resource
+    * [[SubscriptionRegistry]] — from a `BackendConfig` already in the
+    * environment. Subscriptions are selected alongside the rest so Redis mode is
+    * genuinely multi-instance; in-memory and stateless share the in-memory
+    * registry.
+    */
+  val live
+      : URLayer[BackendConfig, SessionStore & MessageRouter & EventReplay & SubscriptionRegistry] =
     ZLayer.fromZIO(ZIO.service[BackendConfig]).flatMap { env =>
       env.get[BackendConfig] match
-        case BackendConfig.Stateless    => StatelessBackend.layer
-        case BackendConfig.InMemory     => InMemoryBackend.layer
-        case BackendConfig.Redis(url)   => redisLayers(url).orDie
+        case BackendConfig.Stateless  => StatelessBackend.layer ++ InMemorySubscriptionRegistry.layer
+        case BackendConfig.InMemory   => InMemoryBackend.layer ++ InMemorySubscriptionRegistry.layer
+        case BackendConfig.Redis(url) => redisLayers(url).orDie
     }
 
   private def redisLayers(url: String)
-      : ZLayer[Any, Throwable, SessionStore & MessageRouter & EventReplay] =
+      : ZLayer[Any, Throwable, SessionStore & MessageRouter & EventReplay & SubscriptionRegistry] =
     val codec = ZLayer.succeed(CodecSupplier.utf8)
     val redisConfig = ZLayer.succeed(parseRedisUrl(url))
     val redis = (codec ++ redisConfig) >>> Redis.singleNode
     val redisSub = (codec ++ redisConfig) >>> RedisSubscription.singleNode
-    (redis ++ redisSub) >>> RedisBackend.layer()
+    // Share one Redis connection across the backend and the subscription registry.
+    (redis ++ redisSub) >>> (RedisBackend.layer() ++ RedisSubscriptionRegistry.layer)
 
   private def parseRedisUrl(url: String): RedisConfig =
     val cleaned = url.stripPrefix("redis://").stripPrefix("rediss://")

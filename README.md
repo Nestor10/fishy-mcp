@@ -41,6 +41,11 @@ libraryDependencies += "io.github.nestor10" %% "fishy-mcp" % "<version>"
 implementation("io.github.nestor10:fishy-mcp_3:<version>")
 ```
 
+`import fishy.mcp.*` is the one import you need — it brings `MCPServer`, `Tool`,
+`Resource`, `Prompt`, `Content`, `ToolContext`, and the auth policies. The OAuth
+**authorization server** is a separate `fishy-mcp-oauth` artifact (see
+[Authentication](#authentication)).
+
 ## Quick Start
 
 ```scala
@@ -162,17 +167,104 @@ same Docker image for every environment.
 
 Setting both `MCP_STATELESS=true` and `REDIS_URL` is a startup error.
 
+## Authentication
+
+Two separate concerns, often conflated:
+
+### Verifying tokens (resource server) — built into `fishy-mcp`
+
+Most servers already have an identity provider and just need to **verify** the
+bearer token on each request. That ships in core:
+
+```scala
+MCPServer
+  .withName("my-server").withTools(echo)
+  .withJwtAuth(JwtSecurityPolicy.Config(
+    jwksUri  = "https://your-idp/.well-known/jwks.json",
+    issuer   = "https://your-idp",
+    audience = "https://your-mcp-server"))
+  .serveHttp
+```
+
+`withJwtAuth` validates each `Authorization: Bearer` JWT against your IdP's JWKS
+and exposes the caller as `ctx.auth: Option[AuthContext]`. `withConfigDrivenAuth()`
+selects the policy from `AUTH_MODE` / `JWT_*` env vars; `withTrustedHeaders()`
+reads identity headers set by a trusted reverse proxy.
+
+### Issuing tokens (authorization server) — `fishy-mcp-oauth`
+
+If you want MCP clients to authenticate *through your server* with OAuth, fishy
+can run the OAuth 2.1 authorization-server flow — dynamic client registration,
+PKCE, token issue / refresh / revoke, JWKS, discovery — and **delegate the actual
+user login to your upstream OIDC provider** (Google, Okta, Keycloak, …).
+
+**fishy is not an identity provider.** It's a relying party to *your* IdP: it
+brokers the OIDC code flow and mints its own MCP-scoped tokens. You still bring
+the IdP.
+
+The turnkey path is env-driven — set the `OAUTH_*` vars, provide a storage
+layer, done:
+
+```scala
+import fishy.mcp.*
+import fishy.mcp.oauth.*
+
+MCPServer
+  .withName("my-server").withTools(echo)
+  .withOAuthFromEnv                       // upstream OIDC driver, signing key, admission, tenant from env
+  .serveHttp
+  .provide(InMemoryOAuthStorage.layer)    // dev; swap for your own store in production
+```
+
+| Env var | Selects | Default if unset |
+|---|---|---|
+| `OAUTH_ISSUER` / `OAUTH_RESOURCE` | this server's identity (required) | — |
+| `OAUTH_UPSTREAM_ISSUER` + `OAUTH_UPSTREAM_CLIENT_ID` / `_SECRET` | generic OIDC upstream driver (discovery-based — Google / Okta / Keycloak / …) | stub IdP (refused in production) |
+| `OAUTH_SIGNING_KEY_PATH` | RSA signing key from a PEM file | per-JVM generated key (refused in production) |
+| `OAUTH_ADMISSION_EMAIL_DOMAINS` | email-domain allowlist admission | admit-all (refused in production) |
+
+Each port resolves to its real adapter when configured, else a dev stub that
+`MCP_PROFILE=production` refuses to boot — so you can ramp up incrementally. The
+one piece you always bring is **storage**: `InMemoryOAuthStorage` for dev, your
+own `OAuthStorage` (Postgres, etc.) for production — same shape as bringing your
+own Redis. `.withOAuth(config)` is the all-stubs dev shortcut; `.withCustomOAuth`
+wires every port by hand.
+
+Add it with one dependency — it pulls in `fishy-mcp` and the standalone,
+MCP-agnostic `fishy-oauth` authorization server transitively:
+
+```scala
+libraryDependencies += "io.github.nestor10" %% "fishy-mcp-oauth" % "<version>"
+```
+
+The only port you bring is `OAuthStorage` (the in-memory store ships for dev);
+shipping a reference Postgres store as a `fishy-mcp-postgres-oauth` module is a
+planned follow-up.
+
 ## What's Implemented
 
-Core: JSON-RPC 2.0, batch support, capability negotiation, session management (`Mcp-Session-Id`).
+Core: JSON-RPC 2.0, batch support, capability negotiation with protocol-version
+negotiation, session management (`Mcp-Session-Id`).
 
-Primitives: `tools/list`, `tools/call`, `resources/list`, `resources/read`, `prompts/list`, `prompts/get`.
+Primitives: `tools/list`, `tools/call`, `resources/list`, `resources/read`,
+`resources/subscribe`, `prompts/list`, `prompts/get`. Content is one unified
+`Content` union (text / image / audio).
 
 Transport: Streamable HTTP (`POST /mcp`, `GET /mcp` SSE), NDJSON stdio.
 
-Advanced: progress reporting, cancellation, server-to-client notifications (`list_changed`), SSE event replay on reconnect (`Last-Event-ID`), config-driven backends (in-memory / Redis / stateless), `ToolContext` (request ID, session ID, `_meta`) passed to every handler.
+Advanced: progress reporting, cancellation, server-to-client requests
+(`sampling/createMessage`, `roots/list`, `elicitation/create`) and notifications
+(`list_changed`), SSE event replay on reconnect (`Last-Event-ID`), config-driven
+backends (in-memory / Redis / stateless), bearer-token verification (see
+[Authentication](#authentication)), `ToolContext` (request ID, session ID,
+`_meta`, `auth`, and `client`/`progress`/`resources` capabilities) on every
+handler.
 
-Not yet: `sampling/createMessage`, OAuth 2.1, pagination, completions.
+OAuth 2.1 authorization server (the separate `fishy-mcp-oauth` artifact, with a
+generic OIDC upstream driver) — see [Authentication](#authentication).
+
+Not yet: pagination, completions, URI templates, a reference Postgres
+`OAuthStorage`.
 
 ## Development Checks
 

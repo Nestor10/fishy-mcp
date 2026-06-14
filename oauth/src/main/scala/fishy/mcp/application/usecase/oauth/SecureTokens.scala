@@ -14,17 +14,17 @@ object SecureTokens:
 
   private val encoder = Base64.getUrlEncoder.withoutPadding
 
-  private val random: UIO[SecureRandom] =
-    ZIO.succeedBlocking(new SecureRandom())
+  /** One shared, thread-safe `SecureRandom`, seeded once at class load.
+    * (Constructing a fresh instance per call is expensive and can block on
+    * entropy.) */
+  private val random = new SecureRandom()
 
   /** Return a URL-safe base64 string of `byteLength` entropy. 32 bytes is the
     * spec-recommended minimum for authorization codes and refresh tokens.
     */
   def urlSafe(byteLength: Int = 32): UIO[String] =
-    random.flatMap { rng =>
-      ZIO.succeed {
-        val buf = new Array[Byte](byteLength)
-        rng.nextBytes(buf)
-        encoder.encodeToString(buf)
-      }
+    ZIO.succeed {
+      val buf = new Array[Byte](byteLength)
+      random.nextBytes(buf)
+      encoder.encodeToString(buf)
     }

@@ -1,6 +1,5 @@
 package fishy.mcp.adapters.inbound.http
 
-import fishy.mcp.domain.model.mcp.ServerCapabilities
 import fishy.mcp.application.ports.{
   EventReplay,
   MessageRouter,
@@ -47,7 +46,7 @@ object HttpTransport:
   // ---------------------------------------------------------------------------
 
   val layer: URLayer[
-    McpDispatcher & SessionStore & MessageRouter & EventReplay & HttpSecurityPolicy & ClientRequester & SessionHooks & SubscriptionRegistry & ServerCapabilities & HttpExtraRoutes,
+    McpDispatcher & SessionStore & MessageRouter & EventReplay & HttpSecurityPolicy & ClientRequester & SessionHooks & SubscriptionRegistry & HttpExtraRoutes,
     HttpTransport
   ] =
     ZLayer.fromFunction(
@@ -60,7 +59,6 @@ object HttpTransport:
           clientRequester: ClientRequester,
           sessionHooks: SessionHooks,
           subscriptionRegistry: SubscriptionRegistry,
-          capabilities: ServerCapabilities,
           extraRoutes: HttpExtraRoutes
       ) =>
         Live(
@@ -72,7 +70,6 @@ object HttpTransport:
           clientRequester,
           sessionHooks,
           subscriptionRegistry,
-          capabilities,
           extraRoutes
         )
     )
@@ -90,7 +87,6 @@ object HttpTransport:
       clientRequester: ClientRequester,
       sessionHooks: SessionHooks,
       subscriptionRegistry: SubscriptionRegistry,
-      capabilities: ServerCapabilities,
       extraRoutes: HttpExtraRoutes
   ) extends HttpTransport:
 
@@ -100,18 +96,8 @@ object HttpTransport:
       messageRouter,
       eventReplay,
       sessionHooks,
-      subscriptionRegistry,
-      initialNotificationsFor(capabilities)
+      subscriptionRegistry
     )
-
-    private def initialNotificationsFor(caps: ServerCapabilities): List[String] =
-      List(
-        caps.tools.map(_ => """{"jsonrpc":"2.0","method":"notifications/tools/list_changed"}"""),
-        caps.resources.map(_ =>
-          """{"jsonrpc":"2.0","method":"notifications/resources/list_changed"}"""
-        ),
-        caps.prompts.map(_ => """{"jsonrpc":"2.0","method":"notifications/prompts/list_changed"}""")
-      ).flatten
 
     private val sessionMiddleware: HandlerAspect[Any, Unit] =
       HandlerAspect.updateRequestZIO { request =>

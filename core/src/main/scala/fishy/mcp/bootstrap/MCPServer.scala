@@ -16,7 +16,7 @@ import fishy.mcp.domain.model.mcp.{
   ServerInfo,
   ToolsCapability
 }
-import fishy.mcp.adapters.storage.{BackendConfig, ConfigDrivenLayers, InMemorySubscriptionRegistry}
+import fishy.mcp.adapters.storage.{BackendConfig, ConfigDrivenLayers}
 import fishy.mcp.application.ports.{
   EventReplay,
   MessageRouter,
@@ -27,7 +27,6 @@ import fishy.mcp.application.ports.{
   SubscriptionRegistry,
   ToolRegistry
 }
-import fishy.mcp.application.ports.oauth.OAuthConfig
 import fishy.mcp.application.usecase.{
   ClientRequester,
   McpDispatcher,
@@ -38,7 +37,6 @@ import fishy.mcp.application.usecase.{
 }
 import fishy.mcp.bootstrap.config.{DeploymentConfig, TracingConfig}
 import fishy.mcp.bootstrap.http.HttpSecurityLayers
-import fishy.mcp.bootstrap.oauth.{OAuthFeature, OAuthLayers}
 import fishy.mcp.domain.model.{Prompt, Resource, Tool}
 import scala.annotation.targetName
 import scala.util.NotGiven
@@ -58,8 +56,9 @@ import zio.telemetry.opentelemetry.tracing.Tracing
   *
   *   - [[fishy.mcp.bootstrap.LoggingLayers]] -- console JSON loggers.
   *   - [[fishy.mcp.bootstrap.http.HttpSecurityLayers]] -- auth policies.
-  *   - [[fishy.mcp.bootstrap.oauth.OAuthFeature]] -- OAuth route mounting.
-  *   - [[fishy.mcp.bootstrap.oauth.OAuthLayers]] -- OAuth port aggregation.
+  *
+  * Feature modules (e.g. `fishy-mcp-oauth`) mount their own HTTP endpoints via
+  * the public [[withHttpExtraRoutes]] seam.
   *
   * Configuration is read once at the entry point via [[AppConfig.load]];
   * downstream layers consume resolved case classes via `ZIO.service[...]`.
@@ -152,37 +151,32 @@ final case class MCPServer[R] private (
     copy(publishToolCallEvents = true)
 
   // ---------------------------------------------------------------------------
-  // OAuth -- delegates to bootstrap.oauth.OAuthFeature
+  // Extra HTTP routes -- generic mount seam for feature modules
   // ---------------------------------------------------------------------------
 
-  /** Built-in OAuth 2.1 AS with in-memory reference adapters. Dev only. */
-  def withOAuth(config: OAuthConfig): MCPServer[R] =
-    copy(httpExtraRoutesLayer = OAuthFeature.inMemory(config))
-
-  /** Built-in OAuth 2.1 AS with deployer-supplied port stack.
+  /** Replace the extra-HTTP-routes layer, widening the environment by `R1`.
     *
-    * The deployer supplies only `OAuthLayers.Ports`; the SDK use-cases are
-    * stacked internally. `config` is unused by the routes themselves -- it's
-    * accepted here only to keep the call shape parallel with `withOAuth(config)`.
+    * This is the public seam feature modules build on. `fishy-mcp-oauth`, for
+    * example, ships a `withOAuth` extension that mounts the OAuth authorization
+    * server's routes through here. Extra routes are mounted *before* the
+    * security policy, so discovery/metadata endpoints stay unauthenticated.
+    *
+    * Use `R1 = Any` to mount routes that add no new environment requirement;
+    * pass a concrete `R1` (e.g. a port bundle) to defer that wiring to the
+    * `serveHttp.provide` boundary.
     */
-  def withOAuth(config: OAuthConfig, ports: ULayer[OAuthLayers.Ports]): MCPServer[R] =
-    copy(httpExtraRoutesLayer = OAuthFeature.withCustomLayers(ports))
-
-  /** Mount OAuth endpoints, defer port wiring to the `serveHttp.provide`
-    * boundary. The resulting `MCPServer[R & OAuthLayers.Ports]` requires the
-    * deployer to provide one layer per port (or one bundled layer like
-    * `PostgresOAuthStorage.layer`); use-cases are wired by the SDK.
-    */
-  def withCustomOAuth: MCPServer[R & OAuthLayers.Ports] =
-    type R2 = R & OAuthLayers.Ports
-    MCPServer[R2](
-      name, version,
-      tools.asInstanceOf[List[Tool[R2]]],
-      resources.asInstanceOf[List[Resource[R2]]],
-      prompts.asInstanceOf[List[Prompt[R2]]],
+  def withHttpExtraRoutes[R1](
+      layer: URLayer[R & R1 & DeploymentConfig, HttpExtraRoutes]
+  ): MCPServer[R & R1] =
+    MCPServer[R & R1](
+      name,
+      version,
+      tools.asInstanceOf[List[Tool[R & R1]]],
+      resources.asInstanceOf[List[Resource[R & R1]]],
+      prompts.asInstanceOf[List[Prompt[R & R1]]],
       httpSecurityPolicyLayer,
       sessionHooksLayer,
-      OAuthFeature.asEnvRequirement,
+      layer,
       publishToolCallEvents,
       instructions
     )
@@ -201,7 +195,7 @@ final case class MCPServer[R] private (
   def buildLayers: ZLayer[
     R & BackendConfig & AuthConfig & TracingConfig & DeploymentConfig,
     Nothing,
-    ToolRegistry & ResourceRegistry & PromptRegistry & McpDispatcher & SessionStore & MessageRouter & EventReplay & NotificationSender & ClientRequester & HttpSecurityPolicy & SessionHooks & SubscriptionRegistry & ServerCapabilities & HttpExtraRoutes & Tracing & ContextStorage
+    ToolRegistry & ResourceRegistry & PromptRegistry & McpDispatcher & SessionStore & MessageRouter & EventReplay & NotificationSender & ClientRequester & HttpSecurityPolicy & SessionHooks & SubscriptionRegistry & HttpExtraRoutes & Tracing & ContextStorage
   ] =
     val capabilities = ServerCapabilities(
       tools = if tools.nonEmpty then Some(ToolsCapability(listChanged = Some(true))) else None,
@@ -211,48 +205,57 @@ final case class MCPServer[R] private (
       prompts = if prompts.nonEmpty then Some(PromptsCapability(listChanged = Some(true))) else None
     )
 
-    // Registry layers capture R at construction time, erasing it from the output.
-    val registries: ZLayer[R, Nothing, ToolRegistry & ResourceRegistry & PromptRegistry] =
-      ToolRegistry.layer(tools) ++ ResourceRegistry.layer(resources) ++ PromptRegistry.layer(prompts)
+    // Two values of the same service type can't be auto-wired separately, so the
+    // SDK's built-in list_changed-on-connect hook is combined with the user's
+    // here before wiring.
+    val hooksLayer: ULayer[SessionHooks] =
+      sessionHooksLayer.flatMap { env =>
+        ZLayer.succeed(
+          SessionHooks.combine(SessionHooks.listChangedOnConnect(capabilities), env.get[SessionHooks])
+        )
+      }
 
-    // Remaining services are R-free and macro-wireable. HttpExtraRoutes is composed
-    // separately because its layer may require R (e.g. withCustomOAuth defers OAuth
-    // port implementations to the application boundary).
-    val services = ZLayer.makeSome[
-      ToolRegistry & ResourceRegistry & PromptRegistry & BackendConfig & AuthConfig & TracingConfig,
-      McpDispatcher & SessionStore & MessageRouter & EventReplay & NotificationSender & ClientRequester & HttpSecurityPolicy & SessionHooks & SubscriptionRegistry & ServerCapabilities & Tracing & ContextStorage
+    // One macro-wired graph. The registry and extra-routes layers require `R`
+    // (the user's tool environment), which is supplied as part of the input.
+    ZLayer.makeSome[
+      R & BackendConfig & AuthConfig & TracingConfig & DeploymentConfig,
+      ToolRegistry & ResourceRegistry & PromptRegistry & McpDispatcher & SessionStore & MessageRouter & EventReplay & NotificationSender & ClientRequester & HttpSecurityPolicy & SessionHooks & SubscriptionRegistry & HttpExtraRoutes & Tracing & ContextStorage
     ](
+      ToolRegistry.layer(tools),
+      ResourceRegistry.layer(resources),
+      PromptRegistry.layer(prompts),
       ToolExecutor.layerWith(publishToolCallEvents),
       ResourceExecutor.layer,
       PromptExecutor.layer,
       McpDispatcher.layer(serverInfo, capabilities, instructions),
-      ZLayer.succeed(capabilities),
       ConfigDrivenLayers.live,
-      InMemorySubscriptionRegistry.layer,
       NotificationSender.layer,
       ClientRequester.layer,
       httpSecurityPolicyLayer,
-      sessionHooksLayer,
-      TracingLayers.live
+      hooksLayer,
+      TracingLayers.live,
+      httpExtraRoutesLayer
     )
-
-    val core = registries >>> (services ++ ZLayer.environment[ToolRegistry & ResourceRegistry & PromptRegistry])
-    core ++ httpExtraRoutesLayer
 
   // ---------------------------------------------------------------------------
   // Entry points
   // ---------------------------------------------------------------------------
 
+  /** The resolved sub-configs, spread as one layer for the entry points. */
+  private def configLayer(
+      cfg: AppConfig
+  ): ULayer[BackendConfig & AuthConfig & TracingConfig & DeploymentConfig] =
+    ZLayer.succeed(cfg.backend) ++ ZLayer.succeed(cfg.auth) ++
+      ZLayer.succeed(cfg.tracing) ++ ZLayer.succeed(cfg.deployment)
+
   def serveStdio: ZIO[R, Throwable, Unit] =
     AppConfig.load.flatMap { cfg =>
-      val configs = ZLayer.succeed(cfg.backend) ++ ZLayer.succeed(cfg.auth) ++
-        ZLayer.succeed(cfg.tracing) ++ ZLayer.succeed(cfg.deployment)
-      val layers = (configs >+> buildLayers) >>> StdioTransport.layer
       ZIO.scoped {
         LoggingLayers.stderrJson(cfg.log).build *>
           (ZIO.logInfo(s"Starting $name v$version on stdio") *>
             ZIO.logInfo(s"Tools: ${tools.map(_.name).mkString(", ")}") *>
-            StdioTransport.run.provideSomeLayer[R](layers))
+            StdioTransport.run)
+            .provideSome[R](configLayer(cfg), buildLayers, StdioTransport.layer)
             .catchAllDefect { throwable =>
               ZIO.logErrorCause("FATAL: Unexpected defect in stdio server", Cause.die(throwable)) *>
                 ZIO.die(throwable)
@@ -262,19 +265,13 @@ final case class MCPServer[R] private (
 
   def serveHttp: ZIO[R, Throwable, Nothing] =
     AppConfig.load.flatMap { cfg =>
-      val configs = ZLayer.succeed(cfg.backend) ++ ZLayer.succeed(cfg.auth) ++
-        ZLayer.succeed(cfg.tracing) ++ ZLayer.succeed(cfg.deployment)
-      // `>+>` preserves Tracing/ContextStorage from buildLayers alongside the
-      // HttpTransport service, so HttpTransport.serve can wrap routes in OTel
-      // spans at request time.
-      val layers = (configs >+> buildLayers) >+> HttpTransport.layer
       // Logger setup is handled by MCPApp.bootstrap (or the user's own
-      // ZIOAppDefault.bootstrap). Registering again here doubled every log
-      // line because both registrations stayed active.
+      // ZIOAppDefault.bootstrap); registering again here would double every line.
       ZIO.scoped {
         (ZIO.logInfo(s"Starting $name v$version on HTTP port ${cfg.server.port}") *>
           ZIO.logInfo(s"Tools: ${tools.map(_.name).mkString(", ")}") *>
-          HttpTransport.serve(cfg.server.port).provideSomeLayer[R](layers))
+          HttpTransport.serve(cfg.server.port))
+          .provideSome[R](configLayer(cfg), buildLayers, HttpTransport.layer)
           .catchAllDefect { throwable =>
             ZIO.logErrorCause("FATAL: Unexpected defect in HTTP server", Cause.die(throwable)) *>
               ZIO.die(throwable)
@@ -312,6 +309,20 @@ object MCPServer:
 
   def withTools[R](tools: Tool[R]*)(using NotGiven[R =:= Nothing]): MCPServer[R] =
     MCPServer().withTools(tools*)
+
+  @targetName("withAnyResourcesFromCompanion")
+  def withResources(resources: Resource[Any]*): MCPServer[Any] =
+    MCPServer().withResources(resources*)
+
+  def withResources[R](resources: Resource[R]*)(using NotGiven[R =:= Nothing]): MCPServer[R] =
+    MCPServer().withResources(resources*)
+
+  @targetName("withAnyPromptsFromCompanion")
+  def withPrompts(prompts: Prompt[Any]*): MCPServer[Any] =
+    MCPServer().withPrompts(prompts*)
+
+  def withPrompts[R](prompts: Prompt[R]*)(using NotGiven[R =:= Nothing]): MCPServer[R] =
+    MCPServer().withPrompts(prompts*)
 
   def withName(name: String): MCPServer[Any] =
     MCPServer().withName(name)

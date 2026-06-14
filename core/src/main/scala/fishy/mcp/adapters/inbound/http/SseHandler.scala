@@ -15,18 +15,17 @@ import zio.stream.ZStream
 /** Handles GET /mcp: session validation, event replay on reconnect, and long-lived SSE stream for
   * server push.
   *
-  * `initialNotifications` are emitted as the first events on every new SSE connection. Per the MCP
-  * spec, clients discover available primitives by calling `tools/list`, `resources/list`, etc.
-  * after receiving the corresponding `list_changed` notification. Emitting these on connect ensures
-  * clients populate their lists without waiting for a subsequent change event.
+  * Connect-time notifications (e.g. the `list_changed` events that prompt a client to fetch its
+  * tool / resource / prompt lists) are supplied by `sessionHooks.onConnect`, not by this handler --
+  * see `SessionHooks.listChangedOnConnect`. The handler stays protocol-agnostic: it merges whatever
+  * the hooks emit with live `MessageRouter` messages.
   */
 private[http] final case class SseHandler(
     sessionStore: SessionStore,
     messageRouter: MessageRouter,
     eventReplay: EventReplay,
     sessionHooks: SessionHooks,
-    subscriptionRegistry: SubscriptionRegistry,
-    initialNotifications: List[String] = Nil
+    subscriptionRegistry: SubscriptionRegistry
 ):
 
   private val McpSessionIdHeader = "Mcp-Session-Id"
@@ -79,8 +78,7 @@ private[http] final case class SseHandler(
             sessionHooks.onDisconnect(sessionId) *> subscriptionRegistry.removeSession(sessionId)
           )
           liveStream <- messageRouter.subscribe(sessionId)
-          initStream = ZStream.fromIterable(initialNotifications)
-          combined = initStream ++ (liveStream merge appStream)
+          combined = liveStream merge appStream
           liveSSE = combined.mapZIO { message =>
             eventReplay.append(sessionId, message).map { eventId =>
               eventId + "\n" + message

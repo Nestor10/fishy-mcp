@@ -24,14 +24,13 @@ object ProgressStreamingSpec extends ZIOSpecDefault:
   object SlowInput:
     given Schema[SlowInput] = DeriveSchema.gen
 
-  /** A tool that reports progress via ProgressReporter.current FiberRef. */
+  /** A tool that reports progress via its context's progress capability. */
   val progressTool: fishy.mcp.domain.model.Tool[Any] =
     Tool("slow-task").description("A task that reports progress").handle {
-      (in: SlowInput, _: ToolContext) =>
+      (in: SlowInput, ctx: ToolContext) =>
         for
-          reporter <- ProgressReporter.current.get
           _ <- ZIO.foreach(1 to in.steps) { step =>
-            reporter.report(step.toDouble, Some(in.steps.toDouble), Some(s"Step $step"))
+            ctx.progress.report(step.toDouble, Some(in.steps.toDouble), Some(s"Step $step"))
           }
         yield Content.Text(s"Completed ${in.steps} steps")
     }

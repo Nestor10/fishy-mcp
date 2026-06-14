@@ -1,5 +1,6 @@
 package fishy.mcp.domain.model.mcp
 
+import fishy.mcp.domain.model.Content
 import zio.json.*
 import zio.json.ast.Json
 
@@ -11,28 +12,10 @@ import zio.json.ast.Json
   *   https://modelcontextprotocol.io/specification/2025-03-26/client/sampling
   */
 
-// ---------------------------------------------------------------------------
-// Content types shared with sampling messages
-// ---------------------------------------------------------------------------
-
-/** Content inside a sampling message (text or image). */
-@jsonDiscriminator("type")
-sealed trait SamplingContent
-
-object SamplingContent:
-  @jsonHint("text")
-  final case class Text(text: String) extends SamplingContent
-
-  @jsonHint("image")
-  final case class Image(data: String, mimeType: String) extends SamplingContent
-
-  given JsonDecoder[SamplingContent] = DeriveJsonDecoder.gen
-  given JsonEncoder[SamplingContent] = DeriveJsonEncoder.gen
-
-/** A message in a sampling conversation. */
+/** A message in a sampling conversation. Content is the unified [[Content]]. */
 final case class SamplingMessage(
     role: String,
-    content: SamplingContent
+    content: Content
 )
 
 object SamplingMessage:
@@ -40,10 +23,10 @@ object SamplingMessage:
   given JsonEncoder[SamplingMessage] = DeriveJsonEncoder.gen
 
   def user(text: String): SamplingMessage =
-    SamplingMessage("user", SamplingContent.Text(text))
+    SamplingMessage("user", Content.Text(text))
 
   def assistant(text: String): SamplingMessage =
-    SamplingMessage("assistant", SamplingContent.Text(text))
+    SamplingMessage("assistant", Content.Text(text))
 
 // ---------------------------------------------------------------------------
 // Model preferences
@@ -87,7 +70,7 @@ object CreateMessageParams:
 
 final case class CreateMessageResult(
     role: String,
-    content: SamplingContent,
+    content: Content,
     model: String,
     stopReason: Option[String] = None
 )

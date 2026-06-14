@@ -2,7 +2,12 @@ package fishy.mcp.domain.model
 
 import zio.*
 
-/** Callback for reporting progress during long-running tool execution. */
+/** A tool handler's capability to report progress during long-running work.
+  *
+  * Carried as a typed field on [[ToolContext]] (`ctx.progress`). For a streaming
+  * tool call the executor binds a reporter that emits `notifications/progress`;
+  * for a sync call it is [[noop]].
+  */
 trait ProgressReporter:
   def report(
       progress: Double,
@@ -15,18 +20,3 @@ object ProgressReporter:
   val noop: ProgressReporter = new ProgressReporter:
     def report(progress: Double, total: Option[Double], message: Option[String]): UIO[Unit] =
       ZIO.unit
-
-  /** FiberRef holding the current reporter. Defaults to noop. The dispatcher sets this when a
-    * progress token is present.
-    */
-  val current: FiberRef[ProgressReporter] =
-    Unsafe.unsafe { implicit u =>
-      FiberRef.unsafe.make(noop)
-    }
-
-  def report(
-      progress: Double,
-      total: Option[Double] = None,
-      message: Option[String] = None
-  ): UIO[Unit] =
-    current.get.flatMap(_.report(progress, total, message))

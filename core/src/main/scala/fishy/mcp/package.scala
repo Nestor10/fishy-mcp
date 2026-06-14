@@ -22,7 +22,10 @@ import fishy.mcp.domain.model.ToolError
 
 // Re-export user-facing types for clean imports
 export dsl.Tool
-export dsl.MCPServer
+export dsl.Resource
+export dsl.Prompt
+export bootstrap.MCPServer
+export bootstrap.MCPApp
 export domain.model.ToolError
 export domain.model.ToolContext
 export domain.model.Content
@@ -35,7 +38,6 @@ export adapters.protocol.mcp.ClientMessages.*
 export domain.model.mcp.CreateMessageParams
 export domain.model.mcp.CreateMessageResult
 export domain.model.mcp.SamplingMessage
-export domain.model.mcp.SamplingContent
 export domain.model.mcp.ModelPreferences
 export domain.model.mcp.ListRootsResult
 export domain.model.mcp.Root

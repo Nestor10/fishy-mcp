@@ -138,6 +138,55 @@ object SessionHooksSpec extends ZIOSpecDefault:
         yield assertTrue(captured == "session-42")
       }
     ),
+    suite("built-in hooks")(
+      test("listChangedOnConnect emits one list_changed per advertised primitive") {
+        val caps = ServerCapabilities(
+          tools = Some(ToolsCapability(listChanged = Some(true))),
+          resources = Some(ResourcesCapability(listChanged = Some(true)))
+        )
+        ZIO.scoped {
+          for
+            stream <- SessionHooks.listChangedOnConnect(caps).onConnect("s1", None)
+            items  <- stream.runCollect
+          yield assertTrue(
+            items.size == 2,
+            items.exists(_.contains("notifications/tools/list_changed")),
+            items.exists(_.contains("notifications/resources/list_changed")),
+            !items.exists(_.contains("prompts"))
+          )
+        }
+      },
+      test("listChangedOnConnect with no capabilities emits nothing") {
+        ZIO.scoped {
+          for
+            stream <- SessionHooks.listChangedOnConnect(ServerCapabilities()).onConnect("s1", None)
+            items  <- stream.runCollect
+          yield assertTrue(items.isEmpty)
+        }
+      },
+      test("combine concatenates onConnect first-then-second and runs both onDisconnect") {
+        for
+          disconnects <- Ref.make(List.empty[String])
+          first = new SessionHooks:
+            def onConnect(sessionId: String, auth: Option[AuthContext])
+                : ZIO[Scope, Nothing, ZStream[Any, Nothing, String]] =
+              ZIO.succeed(ZStream("a1", "a2"))
+            def onDisconnect(sessionId: String): UIO[Unit] = disconnects.update(_ :+ "first")
+          second = new SessionHooks:
+            def onConnect(sessionId: String, auth: Option[AuthContext])
+                : ZIO[Scope, Nothing, ZStream[Any, Nothing, String]] =
+              ZIO.succeed(ZStream("b1"))
+            def onDisconnect(sessionId: String): UIO[Unit] = disconnects.update(_ :+ "second")
+          combined = SessionHooks.combine(first, second)
+          items <- ZIO.scoped(combined.onConnect("s1", None).flatMap(_.runCollect))
+          _     <- combined.onDisconnect("s1")
+          order <- disconnects.get
+        yield assertTrue(
+          items.toList == List("a1", "a2", "b1"),
+          order == List("first", "second")
+        )
+      }
+    ),
     suite("tool call event tap")(
       test("emits notifications/message to MessageRouter after tool call") {
         ZIO.scoped {
