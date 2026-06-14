@@ -3,39 +3,33 @@ package fishy.mcp.oauth
 import fishy.mcp.adapters.inbound.http.HttpExtraRoutes
 import fishy.mcp.adapters.inbound.http.oauth.OAuthRoutes
 import fishy.mcp.adapters.outbound.oauth.tenant.SingleTenantResolver
-import fishy.mcp.application.ports.oauth.OAuthConfig
+import fishy.mcp.application.ports.oauth.{OAuthConfig, OAuthStorage}
 import fishy.mcp.bootstrap.config.{DeploymentConfig, DeploymentProfile}
 import fishy.mcp.bootstrap.oauth.OAuthLayers
 import fishy.mcp.domain.model.oauth.{AdmissionSpec, Ids, Tenant, TenantIdpConfig}
 import zio.*
+import zio.http.Client
 
 /** Builds the `HttpExtraRoutes` layer that mounts OAuth's metadata,
-  * registration, authorize, callback, token, and revoke endpoints.
+  * registration, authorize, callback, token, and revoke endpoints onto an MCP
+  * server. Each flavor differs only in how the OAuth ports are sourced; the
+  * shared [[mount]] tail runs the production stub-audit, stacks the SDK
+  * use-cases, and mounts the routes.
   *
-  * Three flavors:
-  *
-  *   - [[inMemory]] -- the SDK's reference adapters. Dev only. Wires every
-  *     OAuth port from [[OAuthLayers.inMemoryPorts]] using a single-tenant
-  *     resolver derived from `config.issuer`. The default OIDC client_id /
-  *     client_secret are blank strings -- intentionally unusable, since this
-  *     bundle ships no real upstream IdP.
-  *   - [[withCustomLayers]] -- production. The deployer supplies a fully
-  *     wired `ULayer[OAuthLayers.OAuthEnv]` (Postgres storage, real IdP,
-  *     etc.); this just mounts the routes on top.
-  *   - [[asEnvRequirement]] -- defers every OAuth port to the application
-  *     boundary so the deployer wires them via the usual `serveHttp.provide`
-  *     call. Useful when the deployer wants per-port composition.
-  *
-  * All three return a layer that goes into `MCPServer.httpExtraRoutesLayer`.
+  *   - [[inMemory]] -- reference adapters, dev only (stub upstream IdP).
+  *   - [[fromEnv]] -- production-leaning: every port except storage selected
+  *     from `OAUTH_*` env; the deployer supplies only `OAuthStorage`.
+  *   - [[withCustomLayers]] -- the deployer supplies a fully-wired port stack.
+  *   - [[asEnvRequirement]] -- every port deferred to `serveHttp.provide`.
   */
 object OAuthFeature:
 
-  /** Layer that runs [[OAuthLayers.audit]] as a side effect at build time.
-    * Composed into every OAuth-mounting flow so the production stub gate
-    * fires regardless of which `with*OAuth` method the deployer used. The
-    * AS-side audit is profile-agnostic; here we derive "is production" from
-    * the MCP deployment profile.
-    */
+  private val routes: URLayer[OAuthRoutes.Env, HttpExtraRoutes] =
+    HttpExtraRoutes.layer[OAuthRoutes.Env](OAuthRoutes.all)
+
+  /** Run the production stub-audit (derived from the MCP deployment profile) as
+    * a build-time side effect. Not auto-wireable -- nothing consumes its `Unit`
+    * output -- so [[mount]] threads it with `>+>`. */
   private val auditLayer: URLayer[OAuthLayers.Ports & DeploymentConfig, Unit] =
     ZLayer.fromZIO(
       ZIO
@@ -43,54 +37,46 @@ object OAuthFeature:
         .flatMap(OAuthLayers.audit)
     )
 
-  /** In-memory reference bundle. Dev only -- restart loses every record.
-    *
-    * Builds a single-tenant resolver from the configured issuer with the
-    * `oidcClientId` / `clientSecret` left blank. Deployments that want a
-    * real upstream IdP must use [[withCustomLayers]] or [[asEnvRequirement]].
-    *
-    * The audit will refuse to boot under `MCP_PROFILE=production` because
-    * every port in this bundle is a [[fishy.mcp.application.ports.oauth.StubMarker]].
-    */
+  /** The one shared tail behind every flavor: audit the resolved ports, stack
+    * the use-cases on them, and mount the routes. */
+  private def mount[In](
+      ports: ZLayer[In, Nothing, OAuthLayers.Ports]
+  ): URLayer[In & DeploymentConfig, HttpExtraRoutes] =
+    (ports >+> auditLayer >+> OAuthLayers.useCases) >>> routes
+
+  /** In-memory reference bundle. Dev only -- restart loses every record, and
+    * `MCP_PROFILE=production` refuses to boot (every port is a stub). */
   def inMemory(config: OAuthConfig): URLayer[DeploymentConfig, HttpExtraRoutes] =
-    val tenantLayer = SingleTenantResolver.layer(defaultTenant(config))
-    val ports       = OAuthLayers.inMemory(config, tenantLayer)
-    (ports >+> auditLayer >+> OAuthLayers.useCases) >>>
-      HttpExtraRoutes.layer[OAuthRoutes.Env](OAuthRoutes.all)
+    mount(OAuthLayers.inMemoryPorts(config, SingleTenantResolver.layer(defaultTenant(config))))
 
-  /** Mount OAuth routes atop a deployer-supplied port stack.
-    *
-    * The deployer supplies only [[OAuthLayers.Ports]] -- the use-cases get
-    * stacked automatically via [[OAuthLayers.useCases]]. SDK internals
-    * (`ExchangeAuthorizationCode`, `RefreshTokens`, `TokenIssuer`, etc.) are
-    * not part of the deployer's API surface. Audit fires automatically.
-    */
+  /** Production-leaning: select every port except storage from `OAUTH_*` env
+    * (real adapter when configured, else the dev stub the audit refuses),
+    * provide the upstream OIDC driver's HTTP `Client`, and defer only
+    * [[OAuthStorage]] to the `serveHttp.provide` boundary. */
+  val fromEnv: URLayer[OAuthStorage & DeploymentConfig, HttpExtraRoutes] =
+    mount(
+      ZLayer.makeSome[OAuthStorage, OAuthLayers.Ports](
+        Client.default.orDie,
+        OAuthLayers.fromEnv.orDie
+      )
+    )
+
+  /** Mount atop a deployer-supplied port stack; the SDK use-cases are stacked
+    * internally and stay out of the deployer's API surface. */
   def withCustomLayers(ports: ULayer[OAuthLayers.Ports]): URLayer[DeploymentConfig, HttpExtraRoutes] =
-    (ports >+> auditLayer >+> OAuthLayers.useCases) >>>
-      HttpExtraRoutes.layer[OAuthRoutes.Env](OAuthRoutes.all)
+    mount(ports)
 
-  /** Mount OAuth routes while requiring the deployer to provide every OAuth
-    * port at the `serveHttp.provide` boundary. The resulting layer surfaces
-    * [[OAuthLayers.Ports]] as the environment requirement -- use-cases are
-    * stacked internally and stay out of the deployer's R type. Audit fires
-    * automatically.
-    */
+  /** Defer every OAuth port to the `serveHttp.provide` boundary. */
   val asEnvRequirement: URLayer[OAuthLayers.Ports & DeploymentConfig, HttpExtraRoutes] =
-    auditLayer >+> OAuthLayers.useCases >>>
-      HttpExtraRoutes.layer[OAuthRoutes.Env](OAuthRoutes.all)
+    mount(ZLayer.environment[OAuthLayers.Ports])
 
-  /** The default tenant used by [[inMemory]]. Hostname comes from the
-    * configured issuer; OIDC client credentials are blank, which is a
-    * deliberate footgun for dev: the bundle ships no real IdP.
-    */
+  /** The default tenant used by [[inMemory]]. Hostname from the issuer; OIDC
+    * credentials blank -- a deliberate dev footgun, since this bundle ships no
+    * real upstream IdP. */
   private def defaultTenant(config: OAuthConfig): Tenant =
     Tenant(
       id = Ids.TenantId("default"),
       hostname = java.net.URI.create(config.issuer).getHost,
-      idp = TenantIdpConfig.Oidc(
-        issuer = config.issuer,
-        oidcClientId = "",
-        clientSecret = ""
-      ),
+      idp = TenantIdpConfig.Oidc(issuer = config.issuer, oidcClientId = "", clientSecret = ""),
       admission = AdmissionSpec("allow-all", Map.empty)
     )

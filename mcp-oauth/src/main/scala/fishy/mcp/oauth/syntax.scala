@@ -2,7 +2,7 @@ package fishy.mcp.oauth
 
 import fishy.mcp.bootstrap.MCPServer
 import fishy.mcp.bootstrap.oauth.OAuthLayers
-import fishy.mcp.application.ports.oauth.OAuthConfig
+import fishy.mcp.application.ports.oauth.{OAuthConfig, OAuthStorage}
 import zio.*
 
 /** MCP builder sugar for mounting the OAuth 2.1 authorization server.
@@ -45,3 +45,12 @@ extension [R](server: MCPServer[R])
     * layer). */
   def withCustomOAuth: MCPServer[R & OAuthLayers.Ports] =
     server.withHttpExtraRoutes[OAuthLayers.Ports](OAuthFeature.asEnvRequirement)
+
+  /** Mount OAuth with env-driven port selection: every port except storage is
+    * chosen from `OAUTH_*` env (real adapter when configured, else the dev stub
+    * the production audit refuses), and the upstream OIDC `Client` is wired
+    * automatically. The deployer supplies only an [[OAuthStorage]] at the
+    * `serveHttp.provide` boundary — `InMemoryOAuthStorage.layer` for dev, their
+    * own for production. */
+  def withOAuthFromEnv: MCPServer[R & OAuthStorage] =
+    server.withHttpExtraRoutes[OAuthStorage](OAuthFeature.fromEnv)

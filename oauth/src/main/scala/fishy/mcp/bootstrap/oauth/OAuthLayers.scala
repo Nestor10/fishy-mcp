@@ -1,10 +1,12 @@
 package fishy.mcp.bootstrap.oauth
 
-import fishy.mcp.adapters.outbound.oauth.admission.AllowAllAdmission
-import fishy.mcp.adapters.outbound.oauth.idp.NullUpstreamIdP
-import fishy.mcp.adapters.outbound.oauth.keys.RsaSigningKeySource
+import fishy.mcp.adapters.outbound.oauth.admission.{AllowAllAdmission, EmailDomainAllowlistAdmission}
+import fishy.mcp.adapters.outbound.oauth.idp.{GenericOidcUpstreamIdP, NullUpstreamIdP}
+import fishy.mcp.adapters.outbound.oauth.keys.{DiskRsaSigningKeySource, RsaSigningKeySource}
 import fishy.mcp.adapters.outbound.oauth.policy.DefaultRedirectUriValidator
+import fishy.mcp.adapters.outbound.oauth.tenant.SingleTenantResolver
 import fishy.mcp.adapters.storage.oauth.InMemoryOAuthStorage
+import fishy.mcp.domain.model.oauth.{AdmissionSpec, Ids, Tenant, TenantIdpConfig}
 import fishy.mcp.application.ports.oauth.{
   AdmissionPolicy,
   OAuthConfig,
@@ -25,6 +27,7 @@ import fishy.mcp.application.usecase.oauth.{
   TokenIssuer
 }
 import zio.*
+import zio.http.Client
 
 /** Layer aggregations for the built-in OAuth Authorization Server.
   *
@@ -129,3 +132,83 @@ object OAuthLayers:
     */
   def inMemory(config: OAuthConfig, tenantResolver: ULayer[TenantResolver]): ULayer[OAuthEnv] =
     inMemoryPorts(config, tenantResolver) >+> useCases
+
+  // ---------------------------------------------------------------------------
+  // Env-driven port selection (storage excluded)
+  // ---------------------------------------------------------------------------
+
+  /** Every port except [[OAuthStorage]] -- the one a deployer always supplies
+    * (the in-memory store ships for dev; bring Postgres/etc. for production). */
+  type NonStoragePorts =
+    OAuthConfig & TenantResolver & AdmissionPolicy
+      & SigningKeySource & UpstreamIdP & RedirectUriValidator
+
+  /** Select every non-storage port from `OAUTH_*` env, each resolving to its
+    * real adapter when configured, else the dev stub (which [[audit]] refuses
+    * in production). Mirrors the MCP `ConfigDrivenLayers` backend selector.
+    *
+    * Needs a `zio.http.Client` for the upstream OIDC driver. Compose with your
+    * own [[OAuthStorage]] to get full [[Ports]]:
+    * {{{ storageLayer ++ (Client.default >>> OAuthLayers.fromEnv) }}}
+    * or let the `fishy-mcp-oauth` glue's `withOAuthFromEnv` wire it for you.
+    *
+    *   - upstream IdP : `OAUTH_UPSTREAM_ISSUER` set -> GenericOidcUpstreamIdP, else NullUpstreamIdP
+    *   - signing key  : `OAUTH_SIGNING_KEY_PATH` set -> DiskRsaSigningKeySource, else generated
+    *   - admission    : `OAUTH_ADMISSION_EMAIL_DOMAINS` set -> email allowlist, else AllowAll
+    */
+  val fromEnv: ZLayer[Client, Config.Error, NonStoragePorts] =
+    ZLayer.fromZIO(ZIO.config(envSetup)).flatMap { resolved =>
+      val s = resolved.get[EnvSetup]
+
+      val upstream: URLayer[Client, UpstreamIdP] =
+        s.upstream.fold(NullUpstreamIdP.layer)((cfg, _) => GenericOidcUpstreamIdP.layer(cfg))
+
+      val signing: ULayer[SigningKeySource] =
+        s.signing.fold(RsaSigningKeySource.generated)(cfg => DiskRsaSigningKeySource.layer(cfg).orDie)
+
+      val admission: ULayer[AdmissionPolicy] =
+        s.admissionDomains.fold(ZLayer.succeed[AdmissionPolicy](AllowAllAdmission))(domains =>
+          ZLayer.succeed[AdmissionPolicy](EmailDomainAllowlistAdmission(domains))
+        )
+
+      ZLayer.makeSome[Client, NonStoragePorts](
+        ZLayer.succeed(s.base),
+        SingleTenantResolver.layer(tenantFor(s)),
+        admission,
+        signing,
+        upstream,
+        DefaultRedirectUriValidator.layer
+      )
+    }
+
+  private final case class UpstreamCreds(clientId: String, clientSecret: String)
+
+  private final case class EnvSetup(
+      base: OAuthConfig,
+      upstream: Option[(GenericOidcUpstreamIdP.Config, UpstreamCreds)],
+      signing: Option[DiskRsaSigningKeySource.Config],
+      admissionDomains: Option[Set[String]]
+  )
+
+  private val envSetup: Config[EnvSetup] =
+    val creds = Config.string("OAUTH_UPSTREAM_CLIENT_ID")
+      .zip(Config.string("OAUTH_UPSTREAM_CLIENT_SECRET"))
+      .map(UpstreamCreds.apply)
+    OAuthConfig.config
+      .zip((GenericOidcUpstreamIdP.Config.config zip creds).optional)
+      .zip(DiskRsaSigningKeySource.Config.config.optional)
+      .zip(Config.chunkOf("OAUTH_ADMISSION_EMAIL_DOMAINS", Config.string).map(_.toSet).optional)
+      .map { case (base, upstream, signing, domains) => EnvSetup(base, upstream, signing, domains) }
+
+  private def tenantFor(s: EnvSetup): Tenant =
+    val hostname =
+      scala.util.Try(java.net.URI(s.base.issuer).getHost).toOption.flatMap(Option(_)).getOrElse("localhost")
+    val idp = s.upstream match
+      case Some((cfg, creds)) =>
+        TenantIdpConfig.Oidc(cfg.issuer, creds.clientId, creds.clientSecret, cfg.scopes)
+      case None =>
+        TenantIdpConfig.Oidc("https://stub.invalid", "dev-stub", "dev-stub")
+    val admission = s.admissionDomains match
+      case Some(d) => AdmissionSpec("email-allowlist", Map("domains" -> d.mkString(",")))
+      case None    => AdmissionSpec("allow-all", Map.empty)
+    Tenant(Ids.TenantId("default"), hostname, idp, admission)

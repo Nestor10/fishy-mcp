@@ -196,11 +196,14 @@ reads identity headers set by a trusted reverse proxy.
 If you want MCP clients to authenticate *through your server* with OAuth, fishy
 can run the OAuth 2.1 authorization-server flow — dynamic client registration,
 PKCE, token issue / refresh / revoke, JWKS, discovery — and **delegate the actual
-user login to your upstream OIDC provider** (Google, Okta, …).
+user login to your upstream OIDC provider** (Google, Okta, Keycloak, …).
 
 **fishy is not an identity provider.** It's a relying party to *your* IdP: it
 brokers the OIDC code flow and mints its own MCP-scoped tokens. You still bring
 the IdP.
+
+The turnkey path is env-driven — set the `OAUTH_*` vars, provide a storage
+layer, done:
 
 ```scala
 import fishy.mcp.*
@@ -208,20 +211,28 @@ import fishy.mcp.oauth.*
 
 MCPServer
   .withName("my-server").withTools(echo)
-  .withOAuth(OAuthConfig(issuer = "https://my-server.example",
-                         resource = "https://my-server.example"))
+  .withOAuthFromEnv                       // upstream OIDC driver, signing key, admission, tenant from env
   .serveHttp
+  .provide(InMemoryOAuthStorage.layer)    // dev; swap for your own store in production
 ```
 
+| Env var | Selects | Default if unset |
+|---|---|---|
+| `OAUTH_ISSUER` / `OAUTH_RESOURCE` | this server's identity (required) | — |
+| `OAUTH_UPSTREAM_ISSUER` + `OAUTH_UPSTREAM_CLIENT_ID` / `_SECRET` | generic OIDC upstream driver (discovery-based — Google / Okta / Keycloak / …) | stub IdP (refused in production) |
+| `OAUTH_SIGNING_KEY_PATH` | RSA signing key from a PEM file | per-JVM generated key (refused in production) |
+| `OAUTH_ADMISSION_EMAIL_DOMAINS` | email-domain allowlist admission | admit-all (refused in production) |
+
+Each port resolves to its real adapter when configured, else a dev stub that
+`MCP_PROFILE=production` refuses to boot — so you can ramp up incrementally. The
+one piece you always bring is **storage**: `InMemoryOAuthStorage` for dev, your
+own `OAuthStorage` (Postgres, etc.) for production — same shape as bringing your
+own Redis. `.withOAuth(config)` is the all-stubs dev shortcut; `.withCustomOAuth`
+wires every port by hand.
+
 This module is **dev-preview and not yet published to Maven** — it lives in the
-repo as `fishy-mcp-oauth`. The `.withOAuth(config)` path above wires in-memory
-reference adapters and a **stub** upstream IdP, which is fine for local
-development only; `MCP_PROFILE=production` refuses to boot with them. A real
-deployment uses `.withCustomOAuth` and supplies its own adapters: an upstream
-OIDC driver (`UpstreamIdP` — generic-OIDC / Google drivers are not shipped yet),
-persistent storage (`OAuthStorage`), and a stable signing key (`SigningKeySource`).
-The authorization server itself is MCP-agnostic and lives in the `fishy-oauth`
-module.
+repo as `fishy-mcp-oauth`. The standalone, MCP-agnostic authorization server is
+the `fishy-oauth` module.
 
 ## What's Implemented
 
