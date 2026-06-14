@@ -8,6 +8,7 @@ import fishy.mcp.adapters.protocol.jsonrpc.{
   Error as JsonRpcError,
   ErrorCode,
   ErrorResponse,
+  InboundMessage,
   Request as McpRequest,
   Response as McpResponse
 }
@@ -60,18 +61,13 @@ private[http] final case class McpRequestHandler(
       case Right(Json.Arr(elements)) =>
         processBatch(elements, sessionId)
       case Right(json) =>
-        val obj = json.asObject
-        val hasMethod = obj.exists(_.contains("method"))
-        val hasResult = obj.exists(_.contains("result"))
-        val hasError  = obj.exists(_.contains("error"))
-        if !hasMethod && (hasResult || hasError) then
-          handleClientResponse(json)
-        else
-          body.fromJson[McpRequest] match
-            case Left(_) =>
-              ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
-            case Right(mcpRequest) =>
-              processSingle(mcpRequest, sessionId)
+        InboundMessage.parse(json) match
+          case Left(_) =>
+            ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
+          case Right(InboundMessage.Dispatch(request)) =>
+            processSingle(request, sessionId)
+          case Right(InboundMessage.ClientResponse(id, outcome)) =>
+            handleClientResponse(id, outcome)
 
   // ---------------------------------------------------------------------------
   // Single request
@@ -167,26 +163,20 @@ private[http] final case class McpRequestHandler(
   // Client response handling (for server-to-client requests)
   // ---------------------------------------------------------------------------
 
-  private def handleClientResponse(json: Json): ZIO[Any, Nothing, Response] =
-    val obj = json.asObject.get
-    val requestId = obj.get("id") match
-      case Some(Json.Str(s)) => s
-      case Some(Json.Num(n)) => n.longValue.toString
-      case _                 => ""
+  private def handleClientResponse(
+      id: RequestId,
+      outcome: Either[JsonRpcError, Json]
+  ): ZIO[Any, Nothing, Response] =
+    val requestId = id match
+      case RequestId.StringId(s) => s
+      case RequestId.NumberId(n) => n.toString
+      case RequestId.Null        => ""
 
     if requestId.isEmpty then
       ZIO.succeed(jsonResponse(invalidRequestError, Status.BadRequest))
     else
-      val result: Either[JsonRpcError, Json] = obj.get("error") match
-        case Some(errorJson) =>
-          errorJson.as[JsonRpcError] match
-            case Right(err) => Left(err)
-            case Left(_)    => Left(JsonRpcError(-32603, "Malformed error response"))
-        case None =>
-          Right(obj.get("result").getOrElse(Json.Obj()))
-
       ZIO.logDebug(s"Client response received for request id=$requestId") *>
-        clientRequester.completeRequest(requestId, result).map { completed =>
+        clientRequester.completeRequest(requestId, outcome).map { completed =>
           if completed then Response.status(Status.Accepted)
           else
             jsonResponse(

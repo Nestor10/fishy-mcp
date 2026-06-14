@@ -2,7 +2,7 @@ package fishy.mcp.integration
 
 import fishy.mcp.adapters.inbound.http.{HttpExtraRoutes, HttpSecurityPolicy, HttpTransport}
 import fishy.mcp.domain.model.mcp.*
-import fishy.mcp.adapters.storage.{InMemorySubscriptionRegistry, RedisBackend}
+import fishy.mcp.adapters.storage.{RedisBackend, RedisSubscriptionRegistry}
 import fishy.mcp.application.ports.*
 import fishy.mcp.application.usecase.*
 import fishy.mcp.bootstrap.TracingLayers
@@ -90,9 +90,8 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
   val fullLayer: ZLayer[Any, Throwable, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing] =
     ZLayer.make[HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing](
       redisContainerLayer,
-      ZLayer.succeed(capabilities),
       SessionHooks.noOp,
-      InMemorySubscriptionRegistry.layer,
+      RedisSubscriptionRegistry.layer,
       TracingLayers.noop,
       ZLayer.succeed(CodecSupplier.utf8),
       Redis.singleNode,
@@ -332,9 +331,8 @@ object RedisIntegrationSpec extends ZIOSpecDefault:
         // processes in a horizontally-scaled deployment.
         val appLayer: ZLayer[RedisConfig, Throwable, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing] =
           ZLayer.makeSome[RedisConfig, HttpTransport & SessionStore & zio.telemetry.opentelemetry.tracing.Tracing](
-            ZLayer.succeed(capabilities),
             SessionHooks.noOp,
-            InMemorySubscriptionRegistry.layer,
+            RedisSubscriptionRegistry.layer,
             TracingLayers.noop,
             ZLayer.succeed(CodecSupplier.utf8),
             Redis.singleNode,

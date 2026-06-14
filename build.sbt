@@ -57,7 +57,7 @@ lazy val assemblySettings = Seq(
 
 lazy val root = project
   .in(file("."))
-  .aggregate(core, example, integration)
+  .aggregate(core, oauth, mcpOauth, example, integration)
   .settings(
     name := "fishy-mcp-root",
     publish / skip := true
@@ -99,6 +99,47 @@ lazy val core = project
       "com.nimbusds" % "nimbus-jose-jwt" % "9.37.3",
 
       // Testing
+      "dev.zio" %% "zio-test" % zioVersion % Test,
+      "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
+      "dev.zio" %% "zio-test-magnolia" % zioVersion % Test
+    )
+  )
+
+// Standalone OAuth 2.1 / OIDC authorization server. Knows NOTHING about MCP:
+// it depends on no fishy module, exposes plain zio-http `Routes` + its port
+// set, and is usable by any zio-http app. This is the reusable artifact; the
+// MCP wiring lives in `mcp-oauth` below.
+lazy val oauth = project
+  .in(file("oauth"))
+  .settings(commonSettings)
+  .settings(
+    name := "fishy-oauth",
+    // Flip to false to publish the standalone AS once it's validated downstream.
+    publish / skip := true,
+    libraryDependencies ++= Seq(
+      "dev.zio" %% "zio" % zioVersion,
+      "dev.zio" %% "zio-http" % zioHttpVersion,
+      "dev.zio" %% "zio-json" % zioJsonVersion,
+      // JWT / JWKS signing + verification
+      "com.nimbusds" % "nimbus-jose-jwt" % "9.37.3",
+      "dev.zio" %% "zio-test" % zioVersion % Test,
+      "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
+      "dev.zio" %% "zio-test-magnolia" % zioVersion % Test
+    )
+  )
+
+// Thin glue binding the standalone OAuth AS to the MCP SDK: mounts the AS
+// routes at core's `HttpExtraRoutes` seam, adds the `MCPServer.withOAuth*`
+// builder extension, and runs the production stub-audit against the
+// deployment profile. dependsOn(core, oauth); core itself stays OAuth-free.
+lazy val mcpOauth = project
+  .in(file("mcp-oauth"))
+  .dependsOn(core, oauth)
+  .settings(commonSettings)
+  .settings(
+    name := "fishy-mcp-oauth",
+    publish / skip := true,
+    libraryDependencies ++= Seq(
       "dev.zio" %% "zio-test" % zioVersion % Test,
       "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
       "dev.zio" %% "zio-test-magnolia" % zioVersion % Test

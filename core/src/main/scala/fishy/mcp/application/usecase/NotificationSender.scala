@@ -1,6 +1,7 @@
 package fishy.mcp.application.usecase
 
 import fishy.mcp.application.ports.{MessageRouter, SessionStore, SubscriptionRegistry}
+import fishy.mcp.adapters.protocol.jsonrpc.Notification
 import zio.*
 import zio.json.*
 import zio.json.ast.Json
@@ -106,11 +107,4 @@ object NotificationSender:
         }
 
     private def makeNotification(method: String, params: Option[Json]): String =
-      val base = Json.Obj(
-        "jsonrpc" -> Json.Str("2.0"),
-        "method" -> Json.Str(method)
-      )
-      val withParams = params match
-        case Some(p) => Json.Obj(base.fields :+ ("params" -> p)*)
-        case None    => base
-      withParams.toJson
+      Notification.make(method, params).toJson

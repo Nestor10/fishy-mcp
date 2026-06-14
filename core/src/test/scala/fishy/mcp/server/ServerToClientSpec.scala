@@ -64,7 +64,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
         assertTrue(
           decoded.isRight,
           decoded.toOption.get.role == "user",
-          decoded.toOption.get.content == SamplingContent.Text("Hello, world!")
+          decoded.toOption.get.content == Content.Text("Hello, world!")
         )
       },
       test("CreateMessageParams encodes correctly") {
@@ -284,7 +284,8 @@ object ServerToClientSpec extends ZIOSpecDefault:
               "model" -> Json.Str("gpt-4")
             )
           )
-        val ctx = ToolContext("req-1", Some("s1"), None, sendClientRequest = Some(callback))
+        val channel: ClientChannel = (method, params) => callback(method, params)
+        val ctx = ToolContext("req-1", Some("s1"), None, client = channel)
         for
           result <- ctx.createMessage(CreateMessageParams(
             messages = List(SamplingMessage.user("Summarize")),
@@ -293,7 +294,7 @@ object ServerToClientSpec extends ZIOSpecDefault:
         yield assertTrue(
           result.role == "assistant",
           result.model == "gpt-4",
-          result.content == SamplingContent.Text("Summary here")
+          result.content == Content.Text("Summary here")
         )
       },
       test("listRoots sends typed request and decodes result") {
@@ -305,7 +306,8 @@ object ServerToClientSpec extends ZIOSpecDefault:
                 Json.Obj("uri" -> Json.Str("file:///project"), "name" -> Json.Str("Project"))
               )
             ))
-        val ctx = ToolContext("req-1", Some("s1"), None, sendClientRequest = Some(callback))
+        val channel: ClientChannel = (method, params) => callback(method, params)
+        val ctx = ToolContext("req-1", Some("s1"), None, client = channel)
         for
           result <- ctx.listRoots
         yield assertTrue(
@@ -321,7 +323,8 @@ object ServerToClientSpec extends ZIOSpecDefault:
             "action" -> Json.Str("accepted"),
             "content" -> Json.Obj("name" -> Json.Str("fishy-mcp"))
           ))
-        val ctx = ToolContext("req-1", Some("s1"), None, sendClientRequest = Some(callback))
+        val channel: ClientChannel = (method, params) => callback(method, params)
+        val ctx = ToolContext("req-1", Some("s1"), None, client = channel)
         for
           result <- ctx.elicit(ElicitationParams(message = "What is your project name?"))
         yield assertTrue(

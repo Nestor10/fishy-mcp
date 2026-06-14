@@ -2,7 +2,6 @@ package fishy.mcp.bootstrap
 
 import fishy.mcp.adapters.inbound.http.AuthConfig
 import fishy.mcp.adapters.storage.BackendConfig
-import fishy.mcp.application.ports.oauth.OAuthConfig
 import fishy.mcp.bootstrap.config.{
   DeploymentConfig,
   DeploymentProfile,
@@ -17,13 +16,8 @@ import zio.*
   * at startup, then everything downstream consumes resolved case classes
   * via `ZIO.service[...]`.
   *
-  * `oauth` is gated on `OAUTH_ENABLED`:
-  *   - `OAUTH_ENABLED=false` (default) -- `oauth` resolves to `None`. Any
-  *     stray `OAUTH_*` env vars are ignored.
-  *   - `OAUTH_ENABLED=true` -- every required `OAUTH_*` var is mandatory; a
-  *     missing one fails startup with a clear error. This eliminates the
-  *     silent-disable trap (e.g. typo'd `OAUTH_ISSUR=...` no longer pretends
-  *     OAuth is off).
+  * OAuth configuration lives in the `fishy-mcp-oauth` module (the AS is opt-in
+  * and out of core); core stays OAuth-agnostic.
   */
 final case class AppConfig(
     server: HttpServerConfig,
@@ -31,29 +25,10 @@ final case class AppConfig(
     tracing: TracingConfig,
     backend: BackendConfig,
     auth: AuthConfig,
-    oauth: Option[OAuthConfig],
     deployment: DeploymentConfig
 )
 
 object AppConfig:
-
-  /** OAuth slot: gated by `OAUTH_ENABLED`. When the gate is true, missing
-    * required `OAUTH_*` vars become a hard `Config.Error.MissingData`; when
-    * false, the inner descriptor is not even read.
-    */
-  private val oauthSlot: Config[Option[OAuthConfig]] = (
-    Config.boolean("OAUTH_ENABLED").withDefault(false) zip
-    OAuthConfig.config.optional
-  ).mapOrFail {
-    case (true, Some(cfg)) => Right(Some(cfg))
-    case (true, None) =>
-      Left(Config.Error.MissingData(
-        Chunk("OAUTH_*"),
-        "OAUTH_ENABLED=true requires OAUTH_ISSUER and OAUTH_RESOURCE; the rest default. " +
-          "Set every required var, or unset OAUTH_ENABLED to disable OAuth."
-      ))
-    case (false, _) => Right(None)
-  }
 
   val config: Config[AppConfig] = (
     HttpServerConfig.config zip
@@ -61,7 +36,6 @@ object AppConfig:
     TracingConfig.config zip
     BackendConfig.config zip
     AuthConfig.config zip
-    oauthSlot zip
     DeploymentConfig.config
   ).map(AppConfig.apply)
 

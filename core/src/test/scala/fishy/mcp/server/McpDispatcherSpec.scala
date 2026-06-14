@@ -40,6 +40,13 @@ object McpDispatcherSpec extends ZIOSpecDefault:
   ): Request =
     Request("2.0", method, params, Some(id))
 
+  def initParams(version: String): Json =
+    Json.Obj(
+      "protocolVersion" -> Json.Str(version),
+      "capabilities" -> Json.Obj(),
+      "clientInfo" -> Json.Obj("name" -> Json.Str("test"), "version" -> Json.Str("1.0"))
+    )
+
   def spec = suite("McpDispatcher")(
     suite("initialize")(
       test("returns server capabilities") {
@@ -73,6 +80,25 @@ object McpDispatcherSpec extends ZIOSpecDefault:
         yield
           val json = result.get.outcome.toOption.get.toString
           assertTrue(!json.contains("\"tools\""))
+      },
+      test("echoes the client's requested protocol version when supported") {
+        for
+          (dispatcher, _) <- makeDispatcher(List(echoTool))
+          result <- dispatcher
+            .dispatch(request("initialize", Some(initParams("2025-03-26"))), None)
+            .flatMap(_.toOption)
+        yield assertTrue(result.get.outcome.toOption.get.toString.contains("2025-03-26"))
+      },
+      test("falls back to the latest version for an unrecognized request") {
+        for
+          (dispatcher, _) <- makeDispatcher(List(echoTool))
+          result <- dispatcher
+            .dispatch(request("initialize", Some(initParams("1999-01-01"))), None)
+            .flatMap(_.toOption)
+        yield assertTrue(
+          result.get.outcome.toOption.get.toString
+            .contains(fishy.mcp.domain.model.mcp.ProtocolVersion.latest)
+        )
       }
     ),
     suite("ping")(

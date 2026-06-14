@@ -1,10 +1,11 @@
-package fishy.mcp.bootstrap.oauth
+package fishy.mcp.oauth
 
 import fishy.mcp.adapters.inbound.http.HttpExtraRoutes
 import fishy.mcp.adapters.inbound.http.oauth.OAuthRoutes
 import fishy.mcp.adapters.outbound.oauth.tenant.SingleTenantResolver
 import fishy.mcp.application.ports.oauth.OAuthConfig
-import fishy.mcp.bootstrap.config.DeploymentConfig
+import fishy.mcp.bootstrap.config.{DeploymentConfig, DeploymentProfile}
+import fishy.mcp.bootstrap.oauth.OAuthLayers
 import fishy.mcp.domain.model.oauth.{AdmissionSpec, Ids, Tenant, TenantIdpConfig}
 import zio.*
 
@@ -31,10 +32,16 @@ object OAuthFeature:
 
   /** Layer that runs [[OAuthLayers.audit]] as a side effect at build time.
     * Composed into every OAuth-mounting flow so the production stub gate
-    * fires regardless of which `with*OAuth` method the deployer used.
+    * fires regardless of which `with*OAuth` method the deployer used. The
+    * AS-side audit is profile-agnostic; here we derive "is production" from
+    * the MCP deployment profile.
     */
   private val auditLayer: URLayer[OAuthLayers.Ports & DeploymentConfig, Unit] =
-    ZLayer.fromZIO(OAuthLayers.audit)
+    ZLayer.fromZIO(
+      ZIO
+        .serviceWith[DeploymentConfig](_.profile == DeploymentProfile.Production)
+        .flatMap(OAuthLayers.audit)
+    )
 
   /** In-memory reference bundle. Dev only -- restart loses every record.
     *

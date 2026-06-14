@@ -73,6 +73,14 @@ object McpDispatcher:
   /** Methods allowed before initialization completes. */
   private val preInitMethods: Set[String] = Set("initialize", "ping")
 
+  /** The initialization gate as an explicit decision rather than control flow
+    * (zionomicon ch.3 / functional-core: keep policy as data). `gateFor`
+    * computes it from session state; `dispatch` interprets it. */
+  private enum Gate:
+    case Route   // proceed to a method handler
+    case Notify  // a notifications/* message: no response, init not required
+    case Reject  // session exists but `initialize` has not completed
+
   private final case class Live(
       serverInfo: ServerInfo,
       capabilities: ServerCapabilities,
@@ -97,24 +105,19 @@ object McpDispatcher:
             ZIO.logAnnotate("sessionId", sessionId.getOrElse("none")) {
               ZIO.logAnnotate("requestId", id.toString) {
                 ZIO.logAnnotate("authSub", auth.map(_.sub).getOrElse("anonymous")) {
-                  if method.startsWith("notifications/") then
-                    handleNotification(method, sessionId, request.params).as(DispatchResult.Empty)
-                  else if preInitMethods.contains(method) then
-                    handleMethod(method, id, request.params, sessionId)
-                  else
-                    sessionId match
-                      case None => handleMethod(method, id, request.params, sessionId)
-                      case Some(sid) =>
-                        sessionStore.isInitialized(sid).flatMap {
-                          case true => handleMethod(method, id, request.params, sessionId)
-                          case false =>
-                            ZIO.succeed(DispatchResult.Single(
-                              ResponsePayload.failure(
-                                id,
-                                McpError.InvalidRequest("Server not initialized. Send initialize first.")
-                              )
-                            ))
-                        }
+                  gateFor(method, sessionId).flatMap {
+                    case Gate.Notify =>
+                      handleNotification(method, sessionId, request.params).as(DispatchResult.Empty)
+                    case Gate.Route =>
+                      handleMethod(method, id, request.params, sessionId)
+                    case Gate.Reject =>
+                      ZIO.succeed(DispatchResult.Single(
+                        ResponsePayload.failure(
+                          id,
+                          McpError.InvalidRequest("Server not initialized. Send initialize first.")
+                        )
+                      ))
+                  }
                 }
               }
             }
@@ -127,7 +130,23 @@ object McpDispatcher:
         body) @@ root("mcp.dispatch")
 
     // -------------------------------------------------------------------------
-    // Routing
+    // Initialization gate (policy)
+    // -------------------------------------------------------------------------
+
+    /** Decide how a request routes given the init lifecycle. Notifications and
+      * the pre-init allow-list always [[Gate.Route]]; a sessionless request
+      * skips the gate; otherwise the session must be initialized. */
+    private def gateFor(method: String, sessionId: Option[String]): UIO[Gate] =
+      if method.startsWith("notifications/") then ZIO.succeed(Gate.Notify)
+      else if preInitMethods.contains(method) then ZIO.succeed(Gate.Route)
+      else
+        sessionId match
+          case None      => ZIO.succeed(Gate.Route)
+          case Some(sid) =>
+            sessionStore.isInitialized(sid).map(init => if init then Gate.Route else Gate.Reject)
+
+    // -------------------------------------------------------------------------
+    // Routing (mechanism)
     // -------------------------------------------------------------------------
 
     private def handleMethod(
@@ -181,7 +200,7 @@ object McpDispatcher:
         case None => ZIO.logDebug("No params on cancel notification")
         case Some(json) =>
           json.as[CancelledParams] match
-            case Left(_) => ZIO.logDebug("Failed to parse CancelledParams")
+            case Left(err) => ZIO.logWarning(s"Ignoring malformed notifications/cancelled params: $err")
             case Right(cancelParams) =>
               val targetId = cancelParams.requestId match
                 case Json.Str(s) => RequestId.StringId(s)
@@ -198,19 +217,30 @@ object McpDispatcher:
         params: Option[Json],
         sessionId: Option[String]
     ): UIO[ResponsePayload] =
-      val storeClientCaps = (params, sessionId) match
-        case (Some(json), Some(sid)) =>
-          json.as[InitializeParams] match
-            case Right(initParams) =>
-              clientRequester.registerClientCapabilities(sid, initParams.capabilities)
-            case Left(_) => ZIO.unit
-        case _ => ZIO.unit
+      val parsed: Either[String, InitializeParams] =
+        params.toRight("initialize: no params").flatMap(_.as[InitializeParams])
 
-      storeClientCaps.as(
+      // Echo the client's requested protocol version when we support it, else
+      // answer with our latest and let the client decide.
+      val negotiatedVersion =
+        parsed.toOption
+          .map(p => ProtocolVersion.negotiate(p.protocolVersion))
+          .getOrElse(ProtocolVersion.latest)
+
+      val handleParams = parsed match
+        case Right(p) =>
+          sessionId match
+            case Some(sid) => clientRequester.registerClientCapabilities(sid, p.capabilities)
+            case None      => ZIO.unit
+        case Left(err) if params.isDefined =>
+          ZIO.logWarning(s"initialize params failed to decode; client capabilities not stored: $err")
+        case Left(_) => ZIO.unit
+
+      handleParams.as(
         encodeResult(
           id,
           InitializeResult(
-            protocolVersion = "2024-11-05",
+            protocolVersion = negotiatedVersion,
             capabilities = capabilities,
             serverInfo = serverInfo,
             instructions = instructions

@@ -38,6 +38,24 @@ object Request:
   extension (r: Request)
     def isNotification: Boolean = r.id.isEmpty
 
+/** A JSON-RPC 2.0 notification: a method call with no `id`, expecting no
+  * response. The single typed source for outbound server→client notification
+  * framing (progress, `list_changed`, logging, …) -- use [[Notification.make]]
+  * instead of hand-building `Json.Obj("jsonrpc" -> ...)`. */
+final case class Notification(
+    jsonrpc: String,
+    method: String,
+    params: Option[Json] = None
+)
+
+object Notification:
+  given JsonDecoder[Notification] = DeriveJsonDecoder.gen
+  given JsonEncoder[Notification] = DeriveJsonEncoder.gen
+
+  /** Build a `"2.0"` notification. `params` is omitted from the wire when None. */
+  def make(method: String, params: Option[Json] = None): Notification =
+    Notification("2.0", method, params)
+
 final case class Response(
     jsonrpc: String,
     result: Json,

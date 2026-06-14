@@ -15,7 +15,6 @@ import fishy.mcp.application.ports.oauth.{
   TenantResolver,
   UpstreamIdP
 }
-import fishy.mcp.bootstrap.config.{DeploymentConfig, DeploymentProfile}
 import fishy.mcp.application.usecase.oauth.{
   CompleteUpstreamCallback,
   ExchangeAuthorizationCode,
@@ -58,32 +57,31 @@ object OAuthLayers:
 
   type OAuthEnv = Ports & UseCases
 
-  /** Production safety audit: refuses to boot when any resolved OAuth port
-    * is a [[StubMarker]] (the SDK's placeholder adapters) and
-    * `MCP_PROFILE=production`. In dev, a stub just logs `WARN`.
+  /** Production safety audit: refuses to boot when any resolved OAuth port is a
+    * [[StubMarker]] (the SDK's placeholder adapters) and `isProduction` is true.
+    * Otherwise a wired stub just logs `WARN`.
     *
-    * Mounted automatically by [[fishy.mcp.bootstrap.oauth.OAuthFeature]] so
-    * any of the three OAuth-mounting paths (`withOAuth(cfg)`,
-    * `withOAuth(cfg, ports)`, `withCustomOAuth`) get the check.
+    * Framework-agnostic by design -- callers pass their own notion of
+    * "production". The MCP glue (`fishy-mcp-oauth`) derives it from the
+    * deployment profile and mounts this automatically on every OAuth path.
     */
-  val audit: URIO[Ports & DeploymentConfig, Unit] =
+  def audit(isProduction: Boolean): URIO[Ports, Unit] =
     for
-      profile   <- ZIO.serviceWith[DeploymentConfig](_.profile)
       upstream  <- ZIO.service[UpstreamIdP]
       admission <- ZIO.service[AdmissionPolicy]
       signer    <- ZIO.service[SigningKeySource]
       stubs = List[Any](upstream, admission, signer).collect { case s: StubMarker => s.stubId }
-      _ <- (profile, stubs) match
-             case (DeploymentProfile.Production, ids) if ids.nonEmpty =>
+      _ <- (isProduction, stubs) match
+             case (true, ids) if ids.nonEmpty =>
                ZIO.die(new IllegalStateException(
                  s"Production deployment refuses to start with OAuth stub adapter(s): ${ids.mkString(", ")}. " +
                    "Replace each with a real implementation (real upstream IdP, deployment-specific admission, " +
-                   "persistent signing key) or unset MCP_PROFILE=production."
+                   "persistent signing key) or disable production mode."
                ))
              case (_, ids) if ids.nonEmpty =>
                ZIO.logWarning(
                  s"OAuth stub adapter(s) wired: ${ids.mkString(", ")}. " +
-                   "Replace before production -- MCP_PROFILE=production will refuse to boot."
+                   "Replace before production -- production mode will refuse to boot."
                )
              case _ => ZIO.unit
     yield ()
