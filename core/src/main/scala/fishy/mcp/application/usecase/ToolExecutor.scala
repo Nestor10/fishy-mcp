@@ -220,11 +220,13 @@ object ToolExecutor:
       toolRegistry
         .call(name, args, ctx)
         .map(content => encodeResult(id, ToolCallResult(List(content))))
-        .catchAll {
-          case err: ToolError.InvalidInput =>
-            ZIO.succeed(ResponsePayload.failure(id, McpError.InvalidParams(err.message)))
-          case err =>
-            ZIO.succeed(ResponsePayload.failure(id, McpError.InternalError(err.message)))
+        // A tool error (bad arguments, validation failure, execution failure) is returned
+        // as an `isError` tool *result*, not a JSON-RPC protocol error: MCP clients surface
+        // result content to the model (so it can self-correct) but genericize protocol
+        // errors. Also logged — a tool failure should never be silent server-side.
+        .catchAll { err =>
+          ZIO.logWarning(s"tool '$name' failed: ${err.message}") *>
+            ZIO.succeed(encodeResult(id, ToolCallResult.error(err.message)))
         }
 
     /** Streaming variant: run the tool, push the final payload to the queue,
