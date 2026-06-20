@@ -131,6 +131,28 @@ object SimpleServerSpec extends ZIOSpecDefault:
           val json = response.get.outcome.toOption.get.toString
           assert(json)(containsString("Result: 12"))
       },
+      test("tools/call returns a tool error as an isError result, not a protocol error") {
+        // A missing required argument must come back as an isError tool result (which MCP
+        // clients surface to the model), not a JSON-RPC error (which clients genericize).
+        for
+          response <- McpDispatcher.dispatch(
+            request(
+              id = 9,
+              method = "tools/call",
+              params = Some(
+                ToolCallParams(
+                  name = "add",
+                  arguments = Some(Json.Obj("a" -> Json.Num(5))) // missing required "b"
+                ).toJsonAST.toOption.get
+              )
+            )
+          ).flatMap(_.toOption)
+        yield
+          val outcome       = response.get.outcome
+          val resultFields  = outcome.toOption.flatMap(_.asObject).map(_.fields.toMap)
+          assert(outcome.toOption)(isSome(anything)) && // a result, not a JSON-RPC protocol error
+          assertTrue(resultFields.exists(_.get("isError").contains(Json.Bool(true))))
+      },
       test("tools/call executes zero-parameter greet tool") {
         for
           response <- McpDispatcher.dispatch(
