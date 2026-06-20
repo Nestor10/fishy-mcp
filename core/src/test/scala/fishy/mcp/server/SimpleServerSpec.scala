@@ -148,9 +148,10 @@ object SimpleServerSpec extends ZIOSpecDefault:
             )
           ).flatMap(_.toOption)
         yield
-          val outcome = response.get.outcome
+          val outcome       = response.get.outcome
+          val resultFields  = outcome.toOption.flatMap(_.asObject).map(_.fields.toMap)
           assert(outcome.toOption)(isSome(anything)) && // a result, not a JSON-RPC protocol error
-          assert(outcome.toOption.get.toString)(containsString("isError"))
+          assertTrue(resultFields.exists(_.get("isError").contains(Json.Bool(true))))
       },
       test("tools/call executes zero-parameter greet tool") {
         for
