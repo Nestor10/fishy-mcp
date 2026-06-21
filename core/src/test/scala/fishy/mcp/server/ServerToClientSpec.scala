@@ -188,12 +188,13 @@ object ServerToClientSpec extends ZIOSpecDefault:
       },
       test("completeRequest fulfills the pending Promise") {
         for
-          (router, _) <- testMessageRouter
+          (router, published) <- testMessageRouter
           requester <- makeRequester(router)
           // Start request in background
           fiber <- requester.sendRequest("s1", "roots/list", Json.Obj(), 5.seconds).fork
-          // Yield to let it register
-          _ <- ZIO.yieldNow *> ZIO.yieldNow
+          // Wait deterministically until the request is published (and its Promise registered) —
+          // Zionomicon §42: coordinate via a Ref, not a yieldNow heuristic that races the scheduler.
+          _ <- published.get.repeatUntil(_.nonEmpty)
           // Simulate client response
           completed <- requester.completeRequest(
             "srv-1",
@@ -210,10 +211,11 @@ object ServerToClientSpec extends ZIOSpecDefault:
       },
       test("completeRequest with error fails the Promise") {
         for
-          (router, _) <- testMessageRouter
+          (router, published) <- testMessageRouter
           requester <- makeRequester(router)
           fiber <- requester.sendRequest("s1", "sampling/createMessage", Json.Obj(), 5.seconds).fork
-          _ <- ZIO.yieldNow *> ZIO.yieldNow
+          // Deterministic wait for the publish (Promise registered) before injecting the error.
+          _ <- published.get.repeatUntil(_.nonEmpty)
           _ <- requester.completeRequest("srv-1", Left(JsonRpcError(-32600, "Not supported")))
           _ <- TestClock.adjust(6.seconds)
           result <- fiber.join.either
@@ -260,12 +262,13 @@ object ServerToClientSpec extends ZIOSpecDefault:
       },
       test("cancelPendingRequests fails all pending Promises") {
         for
-          (router, _) <- testMessageRouter
+          (router, published) <- testMessageRouter
           requester <- makeRequester(router)
           fiber1 <-
             requester.sendRequest("s1", "sampling/createMessage", Json.Obj(), 30.seconds).fork
           fiber2 <- requester.sendRequest("s1", "roots/list", Json.Obj(), 30.seconds).fork
-          _ <- ZIO.yieldNow *> ZIO.yieldNow
+          // Deterministic wait until BOTH requests have published (both Promises registered).
+          _ <- published.get.repeatUntil(_.size >= 2)
           _ <- requester.cancelPendingRequests("s1")
           _ <- TestClock.adjust(31.seconds)
           r1 <- fiber1.join.either
